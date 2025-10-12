@@ -1,5 +1,3 @@
 {
-  "tsv_files": [
-    "scanned-media/output.tsv"
-  ]
+  "tsv_files": ["scanned-media/print.tsv", "scanned-media/master-sel.tsv"]
 }

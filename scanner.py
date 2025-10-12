@@ -175,7 +175,7 @@ def main():
     parser.add_argument('--output-tsv', type=str, required=True, help='Path to the output TSV log file.')
     parser.add_argument('--thumbnails-dir', type=str, required=True, help='Directory to store generated thumbnails.')
     parser.add_argument('--min-size', type=int, default=100, help='Minimum file size in KB to process (default: 100).')
-    parser.add_argument('--extensions', type=str, default='jpg,jpeg,png,heic,tiff,tif,cr2,nef,arw,orf,rw2,pef,dng,psd', help='Comma-separated list of image extensions to scan (e.g., jpg,png,nef).')
+    parser.add_argument('--extensions', type=str, default='jpg,jpeg,png,tiff,tif,psd,png', help='Comma-separated list of image extensions to scan (e.g., jpg,png,nef).')
     
     args = parser.parse_args()
     
