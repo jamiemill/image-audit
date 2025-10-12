@@ -109,6 +109,8 @@
         </div>
         <div class="filter-group range-group"><label>Similar:</label><input type="number" id="similar-gt-filter" placeholder=">"> <input type="number" id="similar-lt-filter" placeholder="<">
         </div>
+        <div class="filter-group range-group"><label>Duplicates:</label><input type="number" id="dupe-gt-filter" placeholder=">"> <input type="number" id="dupe-lt-filter" placeholder="<">
+        </div>
         <div id="filter-buttons"><button id="reset-filters">Reset</button><button id="apply-filters">Apply</button></div>
     </div>
 
@@ -136,13 +138,14 @@
                 if (!configResponse.ok) throw new Error('config.json not found!');
                 const config = await configResponse.json();
 
-                statusEl.textContent = 'Fetching and parsing TSV files...';
+                statusEl.textContent = `Fetching and parsing ${config.tsv_files.length} TSV file(s)...`;
                 const tsvPromises = config.tsv_files.map(path => fetch(path).then(res => res.text()));
                 const tsvContents = await Promise.all(tsvPromises);
 
                 let allData = [];
                 let headers = [];
                 tsvContents.forEach((tsvText, index) => {
+                    if (!tsvText) return;
                     const parsed = parseTsv(tsvText);
                     if (index === 0) headers = parsed.headers;
                     allData.push(...parsed.data);
@@ -157,7 +160,7 @@
                     populateFilterControls(fullDataset);
                     renderMainTable(fullDataset);
                     setupEventListeners();
-                    statusEl.textContent = `Loaded and analyzed ${fullDataset.length} images from ${config.tsv_files.length} sources.`;
+                    statusEl.textContent = `Loaded and analyzed ${fullDataset.length} images from ${config.tsv_files.length} source(s).`;
                 }, 10);
             } catch (error) {
                 console.error('Error loading data:', error);
@@ -180,7 +183,7 @@
         function calculateDuplicates(data) {
             const dupeMap = new Map();
             data.forEach(item => {
-                if (!item.SHA256) return;
+                if (!item.SHA256 || item.SHA256 === 'N/A') return;
                 if (!dupeMap.has(item.SHA256)) {
                     dupeMap.set(item.SHA256, []);
                 }
@@ -265,10 +268,12 @@
                 heightLt: parseInt(document.getElementById('height-lt-filter').value),
                 similarGt: parseInt(document.getElementById('similar-gt-filter').value),
                 similarLt: parseInt(document.getElementById('similar-lt-filter').value),
+                dupeGt: parseInt(document.getElementById('dupe-gt-filter').value),
+                dupeLt: parseInt(document.getElementById('dupe-lt-filter').value),
             };
             const filteredData = fullDataset.filter(row => {
-                const dupeCount = (duplicatesMap.get(row.SHA256)?.length || 1) - 1;
                 const similarCount = similarityMap.get(row.FullPath)?.length || 0;
+                const dupeCount = (duplicatesMap.get(row.SHA256)?.length || 1) - 1;
                 if (filters.drive && row.DriveName !== filters.drive) return false;
                 if (filters.type && row.FileType !== filters.type) return false;
                 if (filters.path && !row.FullPath.toLowerCase().includes(filters.path)) return false;
@@ -281,6 +286,8 @@
                 if (!isNaN(filters.heightLt) && parseInt(row.Height) >= filters.heightLt) return false;
                 if (!isNaN(filters.similarGt) && similarCount <= filters.similarGt) return false;
                 if (!isNaN(filters.similarLt) && similarCount >= filters.similarLt) return false;
+                if (!isNaN(filters.dupeGt) && dupeCount <= filters.dupeGt) return false;
+                if (!isNaN(filters.dupeLt) && dupeCount >= filters.dupeLt) return false;
                 return true;
             });
             renderMainTable(filteredData);
