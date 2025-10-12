@@ -43,6 +43,7 @@
         td:nth-child(3), td:nth-child(4) { white-space: normal; word-break: break-all; }
         th { background-color: #f8f9fa; font-weight: 600; }
         tbody tr:hover { background-color: #f1f3f5; }
+        tbody tr.selected-row { background-color: #dbeafe; }
         td.thumbnail-cell img { max-width: 100px; max-height: 100px; border-radius: 4px; display: block; }
         .similarity-link { color: #007bff; text-decoration: underline; cursor: pointer; }
         #sidebar {
@@ -60,6 +61,26 @@
         .sidebar-header h2 { margin: 0; }
         #close-sidebar { font-size: 1.5rem; font-weight: bold; cursor: pointer; border: none; background: none; }
         .sidebar-content { padding: 2rem; }
+        #sidebar-source-image {
+            display: flex;
+            gap: 1.5rem;
+            padding-bottom: 1.5rem;
+            border-bottom: 1px solid #e9ecef;
+            margin-bottom: 1.5rem;
+        }
+        #sidebar-source-image img {
+            max-width: 150px;
+            max-height: 150px;
+            border-radius: 4px;
+        }
+        #sidebar-source-image ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            font-size: 0.9rem;
+        }
+        #sidebar-source-image li { margin-bottom: 0.5rem; }
+        #sidebar-source-image li strong { color: #495057; }
         #filter-bar {
             background-color: #f1f3f5;
             padding: 1rem 2rem;
@@ -93,10 +114,7 @@
 </head>
 <body>
 
-    <header>
-        <h1>Image Audit Browser</h1>
-        <div id="status">Loading...</div>
-    </header>
+    <header><h1>Image Audit Browser</h1><div id="status">Loading...</div></header>
 
     <div id="filter-bar">
         <div class="filter-group"><label for="drive-filter">Drive</label><select id="drive-filter"></select></div>
@@ -110,14 +128,9 @@
         <div id="filter-buttons"><button id="reset-filters">Reset</button><button id="apply-filters">Apply</button></div>
     </div>
 
-    <main>
-        <table id="main-table">
-            <thead><tr id="main-table-header"></tr></thead>
-            <tbody id="main-table-body"></tbody>
-        </table>
-    </main>
+    <main><table id="main-table"><thead><tr id="main-table-header"></tr></thead><tbody id="main-table-body"></tbody></table></main>
 
-    <aside id="sidebar"><div class="sidebar-header"><h2>Similar Images</h2><button id="close-sidebar">&times;</button></div><div class="sidebar-content" id="sidebar-content"></div></aside>
+    <aside id="sidebar"><div class="sidebar-header"><h2>Similar to...</h2><button id="close-sidebar">&times;</button></div><div class="sidebar-content" id="sidebar-content"><div id="sidebar-source-image"></div><div id="sidebar-similar-list"></div></div></aside>
 
     <script>
         const TSV_PATH = 'scanned-media/output.tsv';
@@ -145,8 +158,6 @@
                 setTimeout(() => {
                     similarityMap = calculateAllSimilarities(fullDataset);
                     populateFilterControls(fullDataset);
-                    
-                    statusEl.textContent = 'Rendering table...';
                     renderMainTable(fullDataset);
                     setupEventListeners();
                     statusEl.textContent = `Loaded and analyzed ${fullDataset.length} images.`;
@@ -249,7 +260,6 @@
                 similarGt: parseInt(document.getElementById('similar-gt-filter').value),
                 similarLt: parseInt(document.getElementById('similar-lt-filter').value),
             };
-
             const filteredData = fullDataset.filter(row => {
                 const similarCount = similarityMap.get(row.FullPath)?.length || 0;
                 if (filters.drive && row.DriveName !== filters.drive) return false;
@@ -266,7 +276,6 @@
                 if (!isNaN(filters.similarLt) && similarCount >= filters.similarLt) return false;
                 return true;
             });
-
             renderMainTable(filteredData);
             document.getElementById('status').textContent = `Showing ${filteredData.length} of ${fullDataset.length} images.`;
         }
@@ -284,21 +293,35 @@
                 const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.PerceptualHash}.jpg" alt="thumbnail" loading="lazy"></td>`;
                 const dataCells = filteredHeaders.map(header => `<td>${row[header]}</td>`).join('');
                 const similarCell = `<td>${similarCountDisplay}</td>`;
-                return `<tr>${thumbnailCell}${dataCells}${similarCell}</tr>`;
+                return `<tr data-row-path="${row.FullPath}">${thumbnailCell}${dataCells}${similarCell}</tr>`;
             }).join('');
             tableBody.innerHTML = rowsHtml;
         }
 
-        function renderSimilarTable(container, similarImages) {
-            if (!similarImages || similarImages.length === 0) {
-                container.innerHTML = '<p>No similar images found.</p>';
+        function renderSourceImageDetails(container, sourceImage) {
+            container.innerHTML = `
+                <img src="${THUMBNAILS_DIR}/${sourceImage.PerceptualHash}.jpg" alt="Source thumbnail">
+                <div>
+                    <ul>
+                        <li><strong>File:</strong> ${sourceImage.FileName}</li>
+                        <li><strong>Path:</strong> ${sourceImage.FullPath}</li>
+                        <li><strong>Drive:</strong> ${sourceImage.DriveName}</li>
+                    </ul>
+                </div>
+            `;
+        }
+
+        function renderSimilarTable(container, sourceImage, similarImages) {
+            const trulySimilar = similarImages.filter(img => img.FullPath !== sourceImage.FullPath);
+            if (!trulySimilar || trulySimilar.length === 0) {
+                container.innerHTML = '<p>No other similar images found.</p>';
                 return;
             }
             const excludedColumns = new Set(['DateTime', 'Copyright', 'Artist', 'Software', 'ImageDescription', 'Keywords', 'PerceptualHash']);
             const filteredHeaders = tableHeaders.filter(h => !excludedColumns.has(h));
             const displayHeaders = ['Thumbnail', ...filteredHeaders, 'Similarity Distance'];
             let table = `<table><thead><tr>${displayHeaders.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>`;
-            table += similarImages.map(row => {
+            table += trulySimilar.map(row => {
                 const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.PerceptualHash}.jpg" alt="thumbnail" loading="lazy"></td>`;
                 const dataCells = filteredHeaders.map(header => `<td>${row[header]}</td>`).join('');
                 const distanceCell = `<td>${row.distance}</td>`;
@@ -310,20 +333,48 @@
 
         function setupEventListeners() {
             const sidebar = document.getElementById('sidebar');
-            document.getElementById('close-sidebar').addEventListener('click', () => sidebar.classList.remove('visible'));
-            document.getElementById('main-table-body').addEventListener('click', (event) => {
+            const mainTableBody = document.getElementById('main-table-body');
+
+            const clearSelection = () => {
+                const selected = document.querySelector('.selected-row');
+                if (selected) selected.classList.remove('selected-row');
+            };
+
+            document.getElementById('close-sidebar').addEventListener('click', () => {
+                sidebar.classList.remove('visible');
+                clearSelection();
+            });
+
+            mainTableBody.addEventListener('click', (event) => {
                 if (event.target.classList.contains('similarity-link')) {
                     event.preventDefault();
+                    clearSelection();
+                    const rowElement = event.target.closest('tr');
+                    rowElement.classList.add('selected-row');
+                    
                     const path = event.target.dataset.path;
+                    const sourceImage = fullDataset.find(item => item.FullPath === path);
                     const similarImages = similarityMap.get(path);
-                    renderSimilarTable(document.getElementById('sidebar-content'), similarImages);
+                    
+                    renderSourceImageDetails(document.getElementById('sidebar-source-image'), sourceImage);
+                    renderSimilarTable(document.getElementById('sidebar-similar-list'), sourceImage, similarImages);
                     sidebar.classList.add('visible');
                 }
             });
+
             document.getElementById('apply-filters').addEventListener('click', applyFilters);
             document.getElementById('reset-filters').addEventListener('click', () => {
                 document.getElementById('filter-bar').querySelectorAll('input, select').forEach(el => el.value = '');
                 applyFilters();
+            });
+
+            document.getElementById('filter-bar').querySelectorAll('input').forEach(input => {
+                input.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        applyFilters();
+                    }
+                });
             });
         }
     </script>
