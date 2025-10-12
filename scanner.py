@@ -7,6 +7,7 @@ from PIL import Image, ExifTags
 import imagehash
 import exifread
 from tqdm import tqdm
+import multiprocessing
 
 # Pillow has a limit to prevent decompression bombs. Set it to a large but sane value. 
 Image.MAX_IMAGE_PIXELS = 500000000 
@@ -148,4 +149,5 @@ def main():
     print(f"Thumbnails saved in: {args.thumbnails_dir}")
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()
