@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Audit Browser</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f8f9fa;
+            color: #212529;
+        }
+        header {
+            background-color: #fff;
+            padding: 1rem 2rem;
+            border-bottom: 1px solid #dee2e6;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        h1 {
+            margin: 0;
+            font-size: 1.5rem;
+        }
+        #status {
+            font-style: italic;
+            color: #6c757d;
+        }
+        main {
+            padding: 2rem;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background-color: #fff;
+            box-shadow: 0 0 1rem rgba(0,0,0,0.05);
+        }
+        th, td {
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid #dee2e6;
+            vertical-align: middle;
+            font-size: 0.9rem;
+        }
+        th {
+            background-color: #f8f9fa;
+            font-weight: 600;
+        }
+        tbody tr:hover {
+            background-color: #f1f3f5;
+        }
+        td.thumbnail-cell img {
+            max-width: 100px;
+            max-height: 100px;
+            border-radius: 4px;
+            display: block;
+        }
+        .similarity-link {
+            color: #007bff;
+            text-decoration: underline;
+            cursor: pointer;
+        }
+        #sidebar {
+            position: fixed;
+            top: 0;
+            right: 0;
+            width: 60%;
+            height: 100%;
+            background-color: #fff;
+            box-shadow: -0.5rem 0 1.5rem rgba(0,0,0,0.15);
+            transform: translateX(100%);
+            transition: transform 0.3s ease-in-out;
+            overflow-y: auto;
+        }
+        #sidebar.visible {
+            transform: translateX(0);
+        }
+        .sidebar-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 2rem;
+            border-bottom: 1px solid #dee2e6;
+            position: sticky;
+            top: 0;
+            background: #fff;
+        }
+        .sidebar-header h2 {
+            margin: 0;
+        }
+        #close-sidebar {
+            font-size: 1.5rem;
+            font-weight: bold;
+            cursor: pointer;
+            border: none;
+            background: none;
+        }
+        .sidebar-content {
+            padding: 2rem;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>Image Audit Browser</h1>
+        <div id="status">Loading...</div>
+    </header>
+
+    <main>
+        <table id="main-table">
+            <thead>
+                <tr id="main-table-header"></tr>
+            </thead>
+            <tbody id="main-table-body"></tbody>
+        </table>
+    </main>
+
+    <aside id="sidebar">
+        <div class="sidebar-header">
+            <h2>Similar Images</h2>
+            <button id="close-sidebar">&times;</button>
+        </div>
+        <div class="sidebar-content" id="sidebar-content">
+            <!-- Similar images table will be injected here -->
+        </div>
+    </aside>
+
+    <script>
+        const TSV_PATH = 'scanned-media/output.tsv';
+        const THUMBNAILS_DIR = 'scanned-media/thumbnails';
+        // A 64-bit hash is 95% similar if hamming distance is <= 3. We use 4 for a bit more inclusiveness.
+        const SIMILARITY_THRESHOLD = 4; 
+
+        // --- Core Logic ---
+
+        document.addEventListener('DOMContentLoaded', main);
+
+        async function main() {
+            const statusEl = document.getElementById('status');
+            try {
+                statusEl.textContent = 'Fetching and parsing data...';
+                const response = await fetch(TSV_PATH);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const tsvText = await response.text();
+                const { headers, data } = parseTsv(tsvText);
+
+                statusEl.textContent = 'Calculating similarities (this may take a moment)...';
+                // Use setTimeout to allow the UI to update before the heavy calculation
+                setTimeout(() => {
+                    const similarityMap = calculateAllSimilarities(data);
+                    
+                    statusEl.textContent = 'Rendering table...';
+                    renderMainTable(headers, data, similarityMap);
+
+                    setupEventListeners(data, similarityMap, headers);
+                    statusEl.textContent = `Loaded and analyzed ${data.length} images.`;
+                }, 10);
+
+            } catch (error) {
+                console.error('Error loading or processing data:', error);
+                statusEl.textContent = `Error: ${error.message}. Make sure you are running a local server.`;
+            }
+        }
+
+        function parseTsv(tsvText) {
+            const lines = tsvText.trim().split('\n');
+            const headers = lines.shift().split('\t');
+            const data = lines.map(line => {
+                const values = line.split('\t');
+                const row = {};
+                headers.forEach((header, i) => {
+                    row[header] = values[i];
+                });
+                return row;
+            });
+            return { headers, data };
+        }
+
+        function hammingDistance(hex1, hex2) {
+            if (!hex1 || !hex2 || hex1.length !== hex2.length) return Infinity;
+            
+            const bigInt1 = BigInt(`0x${hex1}`);
+            const bigInt2 = BigInt(`0x${hex2}`);
+            let xorResult = bigInt1 ^ bigInt2;
+            
+            let distance = 0;
+            while (xorResult > 0) {
+                distance += Number(xorResult & 1n);
+                xorResult >>= 1n;
+            }
+            return distance;
+        }
+
+        function calculateAllSimilarities(data) {
+            const similarityMap = new Map();
+            // First, initialize the map for every single item to ensure .push() is always available.
+            data.forEach(item => {
+                similarityMap.set(item.FullPath, []);
+            });
+
+            // Create an index of items by their hash for efficient lookup.
+            const hashIndex = data.reduce((acc, item) => {
+                if (item.PerceptualHash) {
+                    if (!acc[item.PerceptualHash]) {
+                        acc[item.PerceptualHash] = [];
+                    }
+                    acc[item.PerceptualHash].push(item);
+                }
+                return acc;
+            }, {});
+
+            const uniqueHashes = Object.keys(hashIndex);
+
+            // Now, perform the N^2 comparison only on unique hashes.
+            for (let i = 0; i < uniqueHashes.length; i++) {
+                for (let j = i; j < uniqueHashes.length; j++) {
+                    const hashA = uniqueHashes[i];
+                    const hashB = uniqueHashes[j];
+                    const distance = hammingDistance(hashA, hashB);
+
+                    if (distance <= SIMILARITY_THRESHOLD) {
+                        const itemsA = hashIndex[hashA];
+                        const itemsB = hashIndex[hashB];
+
+                        // Link all items from A to B and B to A
+                        itemsA.forEach(itemA => {
+                            itemsB.forEach(itemB => {
+                                if (itemA.FullPath !== itemB.FullPath) {
+                                    similarityMap.get(itemA.FullPath).push({ ...itemB, distance });
+                                    similarityMap.get(itemB.FullPath).push({ ...itemA, distance });
+                                }
+                            });
+                        });
+                    }
+                }
+            }
+
+            // Sort the similar images by distance for each item
+            for (const key of similarityMap.keys()) {
+                const similarItems = similarityMap.get(key);
+                // Remove duplicates that might arise from the bidirectional push
+                const uniqueSimilarItems = Array.from(new Map(similarItems.map(item => [item.FullPath, item])).values());
+                uniqueSimilarItems.sort((a, b) => a.distance - b.distance);
+                similarityMap.set(key, uniqueSimilarItems);
+            }
+
+            return similarityMap;
+        }
+
+        // --- Rendering Logic ---
+
+        function renderMainTable(headers, data, similarityMap) {
+            const tableHeader = document.getElementById('main-table-header');
+            const tableBody = document.getElementById('main-table-body');
+            
+            const displayHeaders = [...headers, 'Similar Images'];
+            tableHeader.innerHTML = displayHeaders.map(h => `<th>${h}</th>`).join('');
+
+            const rowsHtml = data.map(row => {
+                const similarCount = similarityMap.get(row.FullPath)?.length || 0;
+                const similarCountDisplay = similarCount > 0 
+                    ? `<a href="#" class="similarity-link" data-path="${row.FullPath}">${similarCount}</a>`
+                    : '0';
+
+                const cells = headers.map(header => {
+                    const value = row[header];
+                    if (header === 'PerceptualHash') {
+                        return `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${value}.jpg" alt="thumbnail" loading="lazy"></td>`;
+                    }
+                    return `<td>${value}</td>`;
+                }).join('');
+
+                return `<tr>${cells}<td>${similarCountDisplay}</td></tr>`;
+            }).join('');
+
+            tableBody.innerHTML = rowsHtml;
+        }
+
+        function renderSimilarTable(container, headers, similarImages) {
+            if (!similarImages || similarImages.length === 0) {
+                container.innerHTML = '<p>No similar images found.</p>';
+                return;
+            }
+            const displayHeaders = [...headers, 'Similarity Distance'];
+            let table = `<table><thead><tr>${displayHeaders.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>`;
+            table += similarImages.map(row => {
+                const cells = headers.map(header => {
+                    const value = row[header];
+                     if (header === 'PerceptualHash') {
+                        return `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${value}.jpg" alt="thumbnail" loading="lazy"></td>`;
+                    }
+                    return `<td>${value}</td>`;
+                }).join('');
+                return `<tr>${cells}<td>${row.distance}</td></tr>`;
+            }).join('');
+            table += '</tbody></table>';
+            container.innerHTML = table;
+        }
+
+        // --- Event Handling ---
+
+        function setupEventListeners(data, similarityMap, headers) {
+            const sidebar = document.getElementById('sidebar');
+            const mainTableBody = document.getElementById('main-table-body');
+            
+            document.getElementById('close-sidebar').addEventListener('click', () => {
+                sidebar.classList.remove('visible');
+            });
+
+            mainTableBody.addEventListener('click', (event) => {
+                if (event.target.classList.contains('similarity-link')) {
+                    event.preventDefault();
+                    const path = event.target.dataset.path;
+                    const similarImages = similarityMap.get(path);
+                    const sidebarContent = document.getElementById('sidebar-content');
+                    
+                    renderSimilarTable(sidebarContent, headers, similarImages);
+                    sidebar.classList.add('visible');
+                }
+            });
+        }
+
+    </script>
+</body>
+</html>
