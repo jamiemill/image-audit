@@ -84,7 +84,7 @@ def process_single_image(full_path, drivename, thumbnails_dir, min_size_kb, exte
         except Exception:
             return None
         
-        if not create_thumbnail(full_path, thumbnails_dir, perceptual_hash_str):
+        if not create_thumbnail(full_path, thumbnails_dir, sha256_hex):
             return None
 
         exif_data = get_exif_data(full_path)

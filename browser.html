@@ -533,7 +533,7 @@
               similarCount > 0
                 ? `<a href="#" class="clickable-link similar-link" data-path="${row.FullPath}">${similarCount}</a>`
                 : "0";
-            const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.PerceptualHash}.jpg" alt="thumbnail" loading="lazy"></td>`;
+            const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.SHA256}.jpg" alt="thumbnail" loading="lazy"></td>`;
             const dataCells = filteredHeaders
               .map((header) => `<td>${row[header]}</td>`)
               .join("");
@@ -570,7 +570,7 @@
 
       function renderSourceImageDetails(container, sourceImage) {
         container.innerHTML = `
-                <img src="${THUMBNAILS_DIR}/${sourceImage.PerceptualHash}.jpg" alt="Source thumbnail">
+                <img src="${THUMBNAILS_DIR}/${sourceImage.SHA256}.jpg" alt="Source thumbnail">
                 <div>
                     <ul>
                         <li><strong>File:</strong> ${sourceImage.FileName}</li>
@@ -610,7 +610,7 @@
           .join("")}${distanceHeader}</tr></thead><tbody>`;
         table += list
           .map((row) => {
-            const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.PerceptualHash}.jpg" alt="thumbnail" loading="lazy"></td>`;
+            const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.SHA256}.jpg" alt="thumbnail" loading="lazy"></td>`;
             const dataCells = filteredHeaders
               .map((header) => `<td>${row[header]}</td>`)
               .join("");
