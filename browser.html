@@ -45,7 +45,7 @@
         tbody tr:hover { background-color: #f1f3f5; }
         tbody tr.selected-row { background-color: #dbeafe; }
         td.thumbnail-cell img { max-width: 100px; max-height: 100px; border-radius: 4px; display: block; }
-        .similarity-link { color: #007bff; text-decoration: underline; cursor: pointer; }
+        .clickable-link { color: #007bff; text-decoration: underline; cursor: pointer; }
         #sidebar {
             position: fixed; top: 0; right: 0; width: 60%; height: 100%;
             background-color: #fff; box-shadow: -0.5rem 0 1.5rem rgba(0,0,0,0.15);
@@ -68,17 +68,8 @@
             border-bottom: 1px solid #e9ecef;
             margin-bottom: 1.5rem;
         }
-        #sidebar-source-image img {
-            max-width: 150px;
-            max-height: 150px;
-            border-radius: 4px;
-        }
-        #sidebar-source-image ul {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-            font-size: 0.9rem;
-        }
+        #sidebar-source-image img { max-width: 150px; max-height: 150px; border-radius: 4px; }
+        #sidebar-source-image ul { list-style: none; padding: 0; margin: 0; font-size: 0.9rem; }
         #sidebar-source-image li { margin-bottom: 0.5rem; }
         #sidebar-source-image li strong { color: #495057; }
         #filter-bar {
@@ -92,22 +83,11 @@
         }
         .filter-group { display: flex; flex-direction: column; gap: 0.25rem; }
         .filter-group label { font-size: 0.8rem; font-weight: 500; color: #495057; }
-        .filter-group input, .filter-group select { 
-            padding: 0.375rem 0.75rem;
-            font-size: 0.9rem;
-            border: 1px solid #ced4da;
-            border-radius: 0.25rem;
-        }
+        .filter-group input, .filter-group select { padding: 0.375rem 0.75rem; font-size: 0.9rem; border: 1px solid #ced4da; border-radius: 0.25rem; }
         .filter-group.range-group { flex-direction: row; align-items: center; gap: 0.5rem; }
         .filter-group.range-group input { width: 60px; }
         #filter-buttons { margin-left: auto; display: flex; gap: 0.5rem; }
-        #filter-buttons button {
-            padding: 0.5rem 1rem;
-            font-size: 0.9rem;
-            border-radius: 0.25rem;
-            border: 1px solid transparent;
-            cursor: pointer;
-        }
+        #filter-buttons button { padding: 0.5rem 1rem; font-size: 0.9rem; border-radius: 0.25rem; border: 1px solid transparent; cursor: pointer; }
         #apply-filters { background-color: #007bff; color: white; border-color: #007bff; }
         #reset-filters { background-color: #6c757d; color: white; border-color: #6c757d; }
     </style>
@@ -121,24 +101,29 @@
         <div class="filter-group"><label for="type-filter">Type</label><select id="type-filter"></select></div>
         <div class="filter-group"><label for="path-filter">Path Contains</label><input type="text" id="path-filter"></div>
         <div class="filter-group"><label for="filename-filter">Filename Contains</label><input type="text" id="filename-filter"></div>
-        <div class="filter-group range-group"><label>Size(KB):</label><input type="number" id="size-gt-filter" placeholder=">"> <input type="number" id="size-lt-filter" placeholder="<"></div>
-        <div class="filter-group range-group"><label>Width:</label><input type="number" id="width-gt-filter" placeholder=">"> <input type="number" id="width-lt-filter" placeholder="<"></div>
-        <div class="filter-group range-group"><label>Height:</label><input type="number" id="height-gt-filter" placeholder=">"> <input type="number" id="height-lt-filter" placeholder="<"></div>
-        <div class="filter-group range-group"><label>Similar:</label><input type="number" id="similar-gt-filter" placeholder=">"> <input type="number" id="similar-lt-filter" placeholder="<"></div>
+        <div class="filter-group range-group"><label>Size(KB):</label><input type="number" id="size-gt-filter" placeholder=">"> <input type="number" id="size-lt-filter" placeholder="<">
+        </div>
+        <div class="filter-group range-group"><label>Width:</label><input type="number" id="width-gt-filter" placeholder=">"> <input type="number" id="width-lt-filter" placeholder="<">
+        </div>
+        <div class="filter-group range-group"><label>Height:</label><input type="number" id="height-gt-filter" placeholder=">"> <input type="number" id="height-lt-filter" placeholder="<">
+        </div>
+        <div class="filter-group range-group"><label>Similar:</label><input type="number" id="similar-gt-filter" placeholder=">"> <input type="number" id="similar-lt-filter" placeholder="<">
+        </div>
         <div id="filter-buttons"><button id="reset-filters">Reset</button><button id="apply-filters">Apply</button></div>
     </div>
 
     <main><table id="main-table"><thead><tr id="main-table-header"></tr></thead><tbody id="main-table-body"></tbody></table></main>
 
-    <aside id="sidebar"><div class="sidebar-header"><h2>Similar to...</h2><button id="close-sidebar">&times;</button></div><div class="sidebar-content" id="sidebar-content"><div id="sidebar-source-image"></div><div id="sidebar-similar-list"></div></div></aside>
+    <aside id="sidebar"><div class="sidebar-header"><h2 id="sidebar-title"></h2><button id="close-sidebar">&times;</button></div><div class="sidebar-content" id="sidebar-content"><div id="sidebar-source-image"></div><div id="sidebar-list"></div></div></aside>
 
     <script>
-        const TSV_PATH = 'scanned-media/output.tsv';
+        const CONFIG_PATH = 'config.json';
         const THUMBNAILS_DIR = 'scanned-media/thumbnails';
         const SIMILARITY_THRESHOLD = 4;
 
         let fullDataset = [];
         let similarityMap = new Map();
+        let duplicatesMap = new Map();
         let tableHeaders = [];
 
         document.addEventListener('DOMContentLoaded', main);
@@ -146,21 +131,33 @@
         async function main() {
             const statusEl = document.getElementById('status');
             try {
-                statusEl.textContent = 'Fetching and parsing data...';
-                const response = await fetch(TSV_PATH);
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                const tsvText = await response.text();
-                const { headers, data } = parseTsv(tsvText);
-                fullDataset = data;
+                statusEl.textContent = 'Fetching config...';
+                const configResponse = await fetch(CONFIG_PATH);
+                if (!configResponse.ok) throw new Error('config.json not found!');
+                const config = await configResponse.json();
+
+                statusEl.textContent = 'Fetching and parsing TSV files...';
+                const tsvPromises = config.tsv_files.map(path => fetch(path).then(res => res.text()));
+                const tsvContents = await Promise.all(tsvPromises);
+
+                let allData = [];
+                let headers = [];
+                tsvContents.forEach((tsvText, index) => {
+                    const parsed = parseTsv(tsvText);
+                    if (index === 0) headers = parsed.headers;
+                    allData.push(...parsed.data);
+                });
+                fullDataset = allData;
                 tableHeaders = headers;
 
-                statusEl.textContent = 'Calculating similarities...';
+                statusEl.textContent = 'Calculating duplicates and similarities...';
                 setTimeout(() => {
+                    duplicatesMap = calculateDuplicates(fullDataset);
                     similarityMap = calculateAllSimilarities(fullDataset);
                     populateFilterControls(fullDataset);
                     renderMainTable(fullDataset);
                     setupEventListeners();
-                    statusEl.textContent = `Loaded and analyzed ${fullDataset.length} images.`;
+                    statusEl.textContent = `Loaded and analyzed ${fullDataset.length} images from ${config.tsv_files.length} sources.`;
                 }, 10);
             } catch (error) {
                 console.error('Error loading data:', error);
@@ -180,16 +177,25 @@
             return { headers, data };
         }
 
+        function calculateDuplicates(data) {
+            const dupeMap = new Map();
+            data.forEach(item => {
+                if (!item.SHA256) return;
+                if (!dupeMap.has(item.SHA256)) {
+                    dupeMap.set(item.SHA256, []);
+                }
+                dupeMap.get(item.SHA256).push(item);
+            });
+            return dupeMap;
+        }
+
         function hammingDistance(hex1, hex2) {
             if (!hex1 || !hex2 || hex1.length !== hex2.length) return Infinity;
             const bigInt1 = BigInt(`0x${hex1}`);
             const bigInt2 = BigInt(`0x${hex2}`);
             let xorResult = bigInt1 ^ bigInt2;
             let distance = 0;
-            while (xorResult > 0) {
-                distance += Number(xorResult & 1n);
-                xorResult >>= 1n;
-            }
+            while (xorResult > 0) { distance += Number(xorResult & 1n); xorResult >>= 1n; }
             return distance;
         }
 
@@ -261,6 +267,7 @@
                 similarLt: parseInt(document.getElementById('similar-lt-filter').value),
             };
             const filteredData = fullDataset.filter(row => {
+                const dupeCount = (duplicatesMap.get(row.SHA256)?.length || 1) - 1;
                 const similarCount = similarityMap.get(row.FullPath)?.length || 0;
                 if (filters.drive && row.DriveName !== filters.drive) return false;
                 if (filters.type && row.FileType !== filters.type) return false;
@@ -283,23 +290,24 @@
         function renderMainTable(data) {
             const tableHeader = document.getElementById('main-table-header');
             const tableBody = document.getElementById('main-table-body');
-            const excludedColumns = new Set(['DateTime', 'Copyright', 'Artist', 'Software', 'ImageDescription', 'Keywords', 'PerceptualHash']);
+            const excludedColumns = new Set(['DateTime', 'Copyright', 'Artist', 'Software', 'ImageDescription', 'Keywords', 'PerceptualHash', 'SHA256']);
             const filteredHeaders = tableHeaders.filter(h => !excludedColumns.has(h));
-            const displayHeaders = ['Thumbnail', ...filteredHeaders, 'Similar Images'];
+            const displayHeaders = ['Thumbnail', ...filteredHeaders, 'Duplicates', 'Similar Images'];
             tableHeader.innerHTML = displayHeaders.map(h => `<th>${h}</th>`).join('');
             const rowsHtml = data.map(row => {
+                const dupeCount = (duplicatesMap.get(row.SHA256)?.length || 1) - 1;
                 const similarCount = similarityMap.get(row.FullPath)?.length || 0;
-                const similarCountDisplay = similarCount > 0 ? `<a href="#" class="similarity-link" data-path="${row.FullPath}">${similarCount}</a>` : '0';
+                const dupeDisplay = dupeCount > 0 ? `<a href="#" class="clickable-link duplicate-link" data-path="${row.FullPath}">${dupeCount}</a>` : '0';
+                const similarDisplay = similarCount > 0 ? `<a href="#" class="clickable-link similar-link" data-path="${row.FullPath}">${similarCount}</a>` : '0';
                 const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.PerceptualHash}.jpg" alt="thumbnail" loading="lazy"></td>`;
                 const dataCells = filteredHeaders.map(header => `<td>${row[header]}</td>`).join('');
-                const similarCell = `<td>${similarCountDisplay}</td>`;
-                return `<tr data-row-path="${row.FullPath}">${thumbnailCell}${dataCells}${similarCell}</tr>`;
+                return `<tr data-row-path="${row.FullPath}">${thumbnailCell}${dataCells}<td>${dupeDisplay}</td><td>${similarDisplay}</td></tr>`;
             }).join('');
             tableBody.innerHTML = rowsHtml;
         }
 
         function renderSourceImageDetails(container, sourceImage) {
-            container.innerHTML = `
+             container.innerHTML = `
                 <img src="${THUMBNAILS_DIR}/${sourceImage.PerceptualHash}.jpg" alt="Source thumbnail">
                 <div>
                     <ul>
@@ -311,20 +319,21 @@
             `;
         }
 
-        function renderSimilarTable(container, sourceImage, similarImages) {
-            const trulySimilar = similarImages.filter(img => img.FullPath !== sourceImage.FullPath);
-            if (!trulySimilar || trulySimilar.length === 0) {
-                container.innerHTML = '<p>No other similar images found.</p>';
+        function renderSidebarTable(container, sourceImage, items, type) {
+            const list = items.filter(img => img.FullPath !== sourceImage.FullPath);
+            if (!list || list.length === 0) {
+                container.innerHTML = `<p>No other ${type} found.</p>`;
                 return;
             }
-            const excludedColumns = new Set(['DateTime', 'Copyright', 'Artist', 'Software', 'ImageDescription', 'Keywords', 'PerceptualHash']);
+            const excludedColumns = new Set(['DateTime', 'Copyright', 'Artist', 'Software', 'ImageDescription', 'Keywords', 'PerceptualHash', 'SHA256']);
             const filteredHeaders = tableHeaders.filter(h => !excludedColumns.has(h));
-            const displayHeaders = ['Thumbnail', ...filteredHeaders, 'Similarity Distance'];
-            let table = `<table><thead><tr>${displayHeaders.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>`;
-            table += trulySimilar.map(row => {
+            const distanceHeader = type === 'duplicates' ? '' : '<th>Similarity Distance</th>';
+            const displayHeaders = ['Thumbnail', ...filteredHeaders];
+            let table = `<table><thead><tr>${displayHeaders.map(h => `<th>${h}</th>`).join('')}${distanceHeader}</tr></thead><tbody>`;
+            table += list.map(row => {
                 const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.PerceptualHash}.jpg" alt="thumbnail" loading="lazy"></td>`;
                 const dataCells = filteredHeaders.map(header => `<td>${row[header]}</td>`).join('');
-                const distanceCell = `<td>${row.distance}</td>`;
+                const distanceCell = type === 'duplicates' ? '' : `<td>${row.distance}</td>`;
                 return `<tr>${thumbnailCell}${dataCells}${distanceCell}</tr>`;
             }).join('');
             table += '</tbody></table>';
@@ -334,32 +343,36 @@
         function setupEventListeners() {
             const sidebar = document.getElementById('sidebar');
             const mainTableBody = document.getElementById('main-table-body');
+            const clearSelection = () => { const selected = document.querySelector('.selected-row'); if (selected) selected.classList.remove('.selected-row'); };
 
-            const clearSelection = () => {
-                const selected = document.querySelector('.selected-row');
-                if (selected) selected.classList.remove('selected-row');
-            };
-
-            document.getElementById('close-sidebar').addEventListener('click', () => {
-                sidebar.classList.remove('visible');
-                clearSelection();
-            });
+            document.getElementById('close-sidebar').addEventListener('click', () => { sidebar.classList.remove('visible'); clearSelection(); });
 
             mainTableBody.addEventListener('click', (event) => {
-                if (event.target.classList.contains('similarity-link')) {
-                    event.preventDefault();
-                    clearSelection();
-                    const rowElement = event.target.closest('tr');
-                    rowElement.classList.add('selected-row');
-                    
-                    const path = event.target.dataset.path;
-                    const sourceImage = fullDataset.find(item => item.FullPath === path);
-                    const similarImages = similarityMap.get(path);
-                    
-                    renderSourceImageDetails(document.getElementById('sidebar-source-image'), sourceImage);
-                    renderSimilarTable(document.getElementById('sidebar-similar-list'), sourceImage, similarImages);
-                    sidebar.classList.add('visible');
+                const link = event.target.closest('.clickable-link');
+                if (!link) return;
+
+                event.preventDefault();
+                clearSelection();
+                const rowElement = event.target.closest('tr');
+                rowElement.classList.add('selected-row');
+                
+                const path = link.dataset.path;
+                const sourceImage = fullDataset.find(item => item.FullPath === path);
+                let items, type;
+
+                if (link.classList.contains('similar-link')) {
+                    document.getElementById('sidebar-title').textContent = 'Similar to...';
+                    items = similarityMap.get(path);
+                    type = 'similar images';
+                } else {
+                    document.getElementById('sidebar-title').textContent = 'Exact Duplicates of...';
+                    items = duplicatesMap.get(sourceImage.SHA256);
+                    type = 'duplicates';
                 }
+
+                renderSourceImageDetails(document.getElementById('sidebar-source-image'), sourceImage);
+                renderSidebarTable(document.getElementById('sidebar-list'), sourceImage, items, type);
+                sidebar.classList.add('visible');
             });
 
             document.getElementById('apply-filters').addEventListener('click', applyFilters);
@@ -370,10 +383,7 @@
 
             document.getElementById('filter-bar').querySelectorAll('input').forEach(input => {
                 input.addEventListener('keydown', (event) => {
-                    if (event.key === 'Enter') {
-                        event.preventDefault();
-                        applyFilters();
-                    }
+                    if (event.key === 'Enter') { event.preventDefault(); applyFilters(); }
                 });
             });
         }
