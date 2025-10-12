@@ -257,8 +257,11 @@
         function renderMainTable(headers, data, similarityMap) {
             const tableHeader = document.getElementById('main-table-header');
             const tableBody = document.getElementById('main-table-body');
+
+            const excludedColumns = new Set(['DateTime', 'Copyright', 'Artist', 'Software', 'ImageDescription', 'Keywords', 'PerceptualHash']);
+            const filteredHeaders = headers.filter(h => !excludedColumns.has(h));
             
-            const displayHeaders = [...headers, 'Similar Images'];
+            const displayHeaders = ['Thumbnail', ...filteredHeaders, 'Similar Images'];
             tableHeader.innerHTML = displayHeaders.map(h => `<th>${h}</th>`).join('');
 
             const rowsHtml = data.map(row => {
@@ -267,15 +270,11 @@
                     ? `<a href="#" class="similarity-link" data-path="${row.FullPath}">${similarCount}</a>`
                     : '0';
 
-                const cells = headers.map(header => {
-                    const value = row[header];
-                    if (header === 'PerceptualHash') {
-                        return `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${value}.jpg" alt="thumbnail" loading="lazy"></td>`;
-                    }
-                    return `<td>${value}</td>`;
-                }).join('');
+                const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.PerceptualHash}.jpg" alt="thumbnail" loading="lazy"></td>`;
+                const dataCells = filteredHeaders.map(header => `<td>${row[header]}</td>`).join('');
+                const similarCell = `<td>${similarCountDisplay}</td>`;
 
-                return `<tr>${cells}<td>${similarCountDisplay}</td></tr>`;
+                return `<tr>${thumbnailCell}${dataCells}${similarCell}</tr>`;
             }).join('');
 
             tableBody.innerHTML = rowsHtml;
@@ -286,18 +285,21 @@
                 container.innerHTML = '<p>No similar images found.</p>';
                 return;
             }
-            const displayHeaders = [...headers, 'Similarity Distance'];
+            const excludedColumns = new Set(['DateTime', 'Copyright', 'Artist', 'Software', 'ImageDescription', 'Keywords', 'PerceptualHash']);
+            const filteredHeaders = headers.filter(h => !excludedColumns.has(h));
+
+            const displayHeaders = ['Thumbnail', ...filteredHeaders, 'Similarity Distance'];
+            
             let table = `<table><thead><tr>${displayHeaders.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>`;
+            
             table += similarImages.map(row => {
-                const cells = headers.map(header => {
-                    const value = row[header];
-                     if (header === 'PerceptualHash') {
-                        return `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${value}.jpg" alt="thumbnail" loading="lazy"></td>`;
-                    }
-                    return `<td>${value}</td>`;
-                }).join('');
-                return `<tr>${cells}<td>${row.distance}</td></tr>`;
+                const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.PerceptualHash}.jpg" alt="thumbnail" loading="lazy"></td>`;
+                const dataCells = filteredHeaders.map(header => `<td>${row[header]}</td>`).join('');
+                const distanceCell = `<td>${row.distance}</td>`;
+
+                return `<tr>${thumbnailCell}${dataCells}${distanceCell}</tr>`;
             }).join('');
+
             table += '</tbody></table>';
             container.innerHTML = table;
         }

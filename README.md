@@ -11,3 +11,7 @@
 ## build for distro
 
     pyinstaller --onefile scanner.py
+
+## browser
+
+    python3 -m http.server
