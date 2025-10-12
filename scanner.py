@@ -59,7 +59,7 @@ def create_thumbnail(path, thumbnails_dir, hash_str):
         # This can happen for corrupted files or unsupported formats that sneak by the extension filter.
         return False
 
-def scan_directory(root_dir, output_tsv, thumbnails_dir, min_size_kb, extensions):
+def scan_directory(drivename, root_dir, output_tsv, thumbnails_dir, min_size_kb, extensions):
     """Scans a directory, processes images, and logs data idempotently."""
     
     os.makedirs(thumbnails_dir, exist_ok=True)
@@ -102,7 +102,7 @@ def scan_directory(root_dir, output_tsv, thumbnails_dir, min_size_kb, extensions
         
         if is_new_file:
             header = [
-                'FullPath', 'FileName', 'FileType', 'FileSizeKB', 'PerceptualHash', 
+                'DriveName', 'FullPath', 'FileName', 'FileType', 'FileSizeKB', 'PerceptualHash', 
                 'Width', 'Height', 'DateTime', 'Copyright', 'Artist', 'Software', 
                 'ImageDescription', 'Keywords'
             ]
@@ -134,6 +134,7 @@ def scan_directory(root_dir, output_tsv, thumbnails_dir, min_size_kb, extensions
                 exif_data = get_exif_data(full_path)
 
                 row = [
+                    drivename,
                     full_path,
                     os.path.basename(full_path),
                     file_ext[1:],
@@ -156,6 +157,7 @@ def scan_directory(root_dir, output_tsv, thumbnails_dir, min_size_kb, extensions
 
 def main():
     parser = argparse.ArgumentParser(description="Recursively scan a directory for images, extract metadata, and create thumbnails.")
+    parser.add_argument('--drivename', type=str, required=True, help='A name to identify the drive being scanned, e.g., \'WD_BLACK_1\'.')
     parser.add_argument('--directory', type=str, required=True, help='The root directory to scan.')
     parser.add_argument('--output-tsv', type=str, required=True, help='Path to the output TSV log file.')
     parser.add_argument('--thumbnails-dir', type=str, required=True, help='Directory to store generated thumbnails.')
@@ -164,16 +166,16 @@ def main():
     
     args = parser.parse_args()
     
-    # Convert comma-separated extensions string to a set for faster lookups
     extensions_set = set(args.extensions.lower().split(','))
     
-    print(f"Starting scan in: {args.directory}")
+    print(f"Starting scan on drive: {args.drivename}")
+    print(f"Scanning directory: {args.directory}")
     print(f"Allowed extensions: {', '.join(extensions_set)}")
     print(f"Minimum size: {args.min_size} KB")
     print(f"Logging to: {args.output_tsv}")
     print(f"Thumbnails in: {args.thumbnails_dir}")
 
-    scan_directory(args.directory, args.output_tsv, args.thumbnails_dir, args.min_size, extensions_set)
+    scan_directory(args.drivename, args.directory, args.output_tsv, args.thumbnails_dir, args.min_size, extensions_set)
     
     print("\nScan complete.")
     print(f"Log file created at: {args.output_tsv}")
