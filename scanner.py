@@ -13,24 +13,32 @@ import multiprocessing
 Image.MAX_IMAGE_PIXELS = 500000000 
 
 def get_exif_data(path):
-    """Extracts key EXIF data from an image file using exifread."""
+    """Extracts a curated list of useful, identifying metadata from an image file."""
     try:
         with open(path, 'rb') as f:
             tags = exifread.process_file(f, details=False)
+            
+            # Helper to get a clean, printable value from a tag.
+            def get_tag(tag_name, default='N/A'):
+                val = tags.get(tag_name)
+                return val.printable.strip() if val else default
+
             return {
-                'DateTime': tags.get('EXIF DateTimeOriginal', tags.get('Image DateTime', 'N/A')).printable,
-                'CameraModel': tags.get('Image Model', 'N/A').printable,
-                'LensModel': tags.get('EXIF LensModel', 'N/A').printable,
-                'Artist': tags.get('Image Artist', 'N/A').printable,
-                'Copyright': tags.get('Image Copyright', 'N/A').printable,
+                'DateTime': get_tag('EXIF DateTimeOriginal', get_tag('Image DateTime')),
+                'Copyright': get_tag('Image Copyright'),
+                'Artist': get_tag('Image Artist'),
+                'Software': get_tag('Image Software'),
+                'ImageDescription': get_tag('Image ImageDescription'),
+                'Keywords': get_tag('Iptc.Application2.Keywords', get_tag('XMP-dc:Subject')),
             }
     except Exception:
         return {
             'DateTime': 'N/A',
-            'CameraModel': 'N/A',
-            'LensModel': 'N/A',
-            'Artist': 'N/A',
             'Copyright': 'N/A',
+            'Artist': 'N/A',
+            'Software': 'N/A',
+            'ImageDescription': 'N/A',
+            'Keywords': 'N/A',
         }
 
 def create_thumbnail(path, thumbnails_dir, hash_str):
@@ -52,75 +60,98 @@ def create_thumbnail(path, thumbnails_dir, hash_str):
         return False
 
 def scan_directory(root_dir, output_tsv, thumbnails_dir, min_size_kb, extensions):
-    """Scans a directory, processes images, and logs data."""
+    """Scans a directory, processes images, and logs data idempotently."""
     
-    # Ensure output directories exist
     os.makedirs(thumbnails_dir, exist_ok=True)
 
-    # Get a list of all files to process to have a total for tqdm
-    files_to_process = []
+    # --- Idempotency: Load already processed file paths ---
+    processed_paths = set()
+    is_new_file = not os.path.exists(output_tsv) or os.path.getsize(output_tsv) == 0
+    if not is_new_file:
+        try:
+            with open(output_tsv, 'r', newline='', encoding='utf-8') as tsvfile:
+                reader = csv.reader(tsvfile, delimiter='\t')
+                header = next(reader) # Skip header
+                full_path_index = header.index('FullPath')
+                for row in reader:
+                    if len(row) > full_path_index:
+                        processed_paths.add(row[full_path_index])
+            print(f"Found {len(processed_paths)} already processed files in the log.")
+        except (IOError, StopIteration, ValueError) as e:
+            print(f"Warning: Could not read existing log file. Starting fresh. Error: {e}")
+            is_new_file = True # Treat as a new file if reading fails
+
+    # --- File Discovery ---
+    all_files_in_dir = []
     for dirpath, _, filenames in os.walk(root_dir):
         for filename in filenames:
-            files_to_process.append(os.path.join(dirpath, filename))
+            all_files_in_dir.append(os.path.join(dirpath, filename))
+    
+    # Filter out files that have already been processed
+    files_to_process = [p for p in all_files_in_dir if p not in processed_paths]
 
-    # Open the TSV file and write the header
-    with open(output_tsv, 'w', newline='', encoding='utf-8') as tsvfile:
+    if not files_to_process:
+        print("No new files to process.")
+        return
+
+    print(f"Total files to process: {len(files_to_process)}")
+
+    # --- Processing Loop ---
+    with open(output_tsv, 'a', newline='', encoding='utf-8') as tsvfile:
         writer = csv.writer(tsvfile, delimiter='\t')
-        header = [
-            'FullPath', 'FileName', 'FileType', 'FileSizeKB', 
-            'PerceptualHash', 'DateTime', 'CameraModel', 'LensModel', 
-            'Artist', 'Copyright'
-        ]
-        writer.writerow(header)
+        
+        if is_new_file:
+            header = [
+                'FullPath', 'FileName', 'FileType', 'FileSizeKB', 'PerceptualHash', 
+                'Width', 'Height', 'DateTime', 'Copyright', 'Artist', 'Software', 
+                'ImageDescription', 'Keywords'
+            ]
+            writer.writerow(header)
+            tsvfile.flush()
 
-        # Process files with a progress bar
-        for full_path in tqdm(files_to_process, desc="Scanning Images"):
+        for full_path in tqdm(files_to_process, desc="Scanning New Images"):
             try:
-                # 1. Filter by extension
                 file_ext = os.path.splitext(full_path)[1].lower()
                 if not file_ext or file_ext[1:] not in extensions:
                     continue
 
-                # 2. Filter by size
                 file_size_kb = os.path.getsize(full_path) / 1024
                 if file_size_kb < min_size_kb:
                     continue
 
-                # 3. Generate Perceptual Hash
+                width, height = 0, 0
                 try:
-                    # Use Pillow to open for hashing, as it supports more formats robustly
                     img_for_hash = Image.open(full_path)
+                    width, height = img_for_hash.size
                     hash_val = imagehash.dhash(img_for_hash)
                     hash_str = str(hash_val)
                 except Exception:
-                    # If hashing fails, we can't process this file
                     continue
                 
-                # 4. Create Thumbnail
                 if not create_thumbnail(full_path, thumbnails_dir, hash_str):
-                    # If thumbnail creation fails, skip logging this file
                     continue
 
-                # 5. Get EXIF data
                 exif_data = get_exif_data(full_path)
 
-                # 6. Write to TSV
                 row = [
                     full_path,
                     os.path.basename(full_path),
                     file_ext[1:],
                     f"{file_size_kb:.2f}",
                     hash_str,
+                    width,
+                    height,
                     exif_data['DateTime'],
-                    exif_data['CameraModel'],
-                    exif_data['LensModel'],
+                    exif_data['Copyright'],
                     exif_data['Artist'],
-                    exif_data['Copyright']
+                    exif_data['Software'],
+                    exif_data['ImageDescription'],
+                    exif_data['Keywords'],
                 ]
                 writer.writerow(row)
+                tsvfile.flush() # Flush after each write for safety
 
             except (IOError, OSError):
-                # Handle cases like broken symlinks or permission errors gracefully
                 continue
 
 def main():
@@ -129,7 +160,7 @@ def main():
     parser.add_argument('--output-tsv', type=str, required=True, help='Path to the output TSV log file.')
     parser.add_argument('--thumbnails-dir', type=str, required=True, help='Directory to store generated thumbnails.')
     parser.add_argument('--min-size', type=int, default=100, help='Minimum file size in KB to process (default: 100).')
-    parser.add_argument('--extensions', type=str, default='jpg,jpeg,png,heic,tiff,tif,cr2,nef,arw,orf,rw2,pef,dng', help='Comma-separated list of image extensions to scan (e.g., jpg,png,nef).')
+    parser.add_argument('--extensions', type=str, default='jpg,jpeg,png,heic,tiff,tif,cr2,nef,arw,orf,rw2,pef,dng,psd', help='Comma-separated list of image extensions to scan (e.g., jpg,png,nef).')
     
     args = parser.parse_args()
     
