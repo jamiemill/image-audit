@@ -1,259 +1,575 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Image Audit Browser</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; background-color: #f8f9fa; color: #212529; }
-        header { background-color: #fff; padding: 1rem 2rem; border-bottom: 1px solid #dee2e6; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; }
-        h1 { margin: 0; font-size: 1.5rem; }
-        #status { font-style: italic; color: #6c757d; }
-        main { padding: 2rem; }
-        table { width: 100%; border-collapse: collapse; background-color: #fff; box-shadow: 0 0 1rem rgba(0,0,0,0.05); }
-        th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid #dee2e6; vertical-align: middle; font-size: 0.9rem; white-space: nowrap; }
-        td:nth-child(3), td:nth-child(4) { white-space: normal; word-break: break-all; }
-        th { background-color: #f8f9fa; font-weight: 600; }
-        tbody tr:hover { background-color: #f1f3f5; }
-        tbody tr.selected-row { background-color: #dbeafe; }
-        td.thumbnail-cell img { max-width: 100px; max-height: 100px; border-radius: 4px; display: block; }
-        .clickable-link { color: #007bff; text-decoration: underline; cursor: pointer; }
-        #sidebar { position: fixed; top: 0; right: 0; width: 60%; height: 100%; background-color: #fff; box-shadow: -0.5rem 0 1.5rem rgba(0,0,0,0.15); transform: translateX(100%); transition: transform 0.3s ease-in-out; overflow-y: auto; z-index: 200; }
-        #sidebar.visible { transform: translateX(0); }
-        .sidebar-header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; border-bottom: 1px solid #dee2e6; position: sticky; top: 0; background: #fff; }
-        .sidebar-header h2 { margin: 0; }
-        #close-sidebar { font-size: 1.5rem; font-weight: bold; cursor: pointer; border: none; background: none; }
-        .sidebar-content { padding: 2rem; }
-        #sidebar-source-image { display: flex; gap: 1.5rem; padding-bottom: 1.5rem; border-bottom: 1px solid #e9ecef; margin-bottom: 1.5rem; }
-        #sidebar-source-image img { max-width: 150px; max-height: 150px; border-radius: 4px; }
-        #sidebar-source-image ul { list-style: none; padding: 0; margin: 0; font-size: 0.9rem; }
-        #sidebar-source-image li { margin-bottom: 0.5rem; }
-        #sidebar-source-image li strong { color: #495057; }
-        #filter-bar { background-color: #f1f3f5; padding: 1rem 2rem; border-bottom: 1px solid #dee2e6; display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; }
-        .filter-group { display: flex; flex-direction: column; gap: 0.25rem; }
-        .filter-group label { font-size: 0.8rem; font-weight: 500; color: #495057; }
-        .filter-group input, .filter-group select { padding: 0.375rem 0.75rem; font-size: 0.9rem; border: 1px solid #ced4da; border-radius: 0.25rem; }
-        .filter-group.range-group { flex-direction: row; align-items: center; gap: 0.5rem; }
-        .filter-group.range-group input { width: 60px; }
-        #filter-buttons { margin-left: auto; display: flex; gap: 0.5rem; }
-        #filter-buttons button { padding: 0.5rem 1rem; font-size: 0.9rem; border-radius: 0.25rem; border: 1px solid transparent; cursor: pointer; }
-        #apply-filters { background-color: #007bff; color: white; border-color: #007bff; }
-        #reset-filters { background-color: #6c757d; color: white; border-color: #6c757d; }
-        #pagination-controls { display: flex; justify-content: center; align-items: center; padding: 1rem; gap: 0.5rem; }
-        #pagination-controls button, #pagination-controls span { padding: 0.5rem 0.75rem; border: 1px solid #dee2e6; background-color: #fff; border-radius: 0.25rem; }
-        #pagination-controls button:not([disabled]) { cursor: pointer; }
-        #pagination-controls button:disabled { color: #adb5bd; background-color: #e9ecef; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Helvetica, Arial, sans-serif;
+        margin: 0;
+        padding: 0;
+        background-color: #f8f9fa;
+        color: #212529;
+      }
+      header {
+        background-color: #fff;
+        padding: 1rem 2rem;
+        border-bottom: 1px solid #dee2e6;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        position: sticky;
+        top: 0;
+        z-index: 100;
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.5rem;
+      }
+      #status {
+        font-style: italic;
+        color: #6c757d;
+      }
+      main {
+        padding: 2rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background-color: #fff;
+        box-shadow: 0 0 1rem rgba(0, 0, 0, 0.05);
+      }
+      th,
+      td {
+        padding: 0.75rem 1rem;
+        text-align: left;
+        border-bottom: 1px solid #dee2e6;
+        vertical-align: middle;
+        font-size: 0.9rem;
+        white-space: nowrap;
+      }
+      td:nth-child(3),
+      td:nth-child(4) {
+        white-space: normal;
+        word-break: break-all;
+      }
+      th {
+        background-color: #f8f9fa;
+        font-weight: 600;
+      }
+      tbody tr:hover {
+        background-color: #f1f3f5;
+      }
+      tbody tr.selected-row {
+        background-color: #dbeafe;
+      }
+      td.thumbnail-cell img {
+        max-width: 100px;
+        max-height: 100px;
+        border-radius: 4px;
+        display: block;
+      }
+      .clickable-link {
+        color: #007bff;
+        text-decoration: underline;
+        cursor: pointer;
+      }
+      #sidebar {
+        position: fixed;
+        top: 0;
+        right: 0;
+        width: 60%;
+        height: 100%;
+        background-color: #fff;
+        box-shadow: -0.5rem 0 1.5rem rgba(0, 0, 0, 0.15);
+        transform: translateX(100%);
+        transition: transform 0.3s ease-in-out;
+        overflow-y: auto;
+        z-index: 200;
+      }
+      #sidebar.visible {
+        transform: translateX(0);
+      }
+      .sidebar-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 1rem 2rem;
+        border-bottom: 1px solid #dee2e6;
+        position: sticky;
+        top: 0;
+        background: #fff;
+      }
+      .sidebar-header h2 {
+        margin: 0;
+      }
+      #close-sidebar {
+        font-size: 1.5rem;
+        font-weight: bold;
+        cursor: pointer;
+        border: none;
+        background: none;
+      }
+      .sidebar-content {
+        padding: 2rem;
+      }
+      #sidebar-source-image {
+        display: flex;
+        gap: 1.5rem;
+        padding-bottom: 1.5rem;
+        border-bottom: 1px solid #e9ecef;
+        margin-bottom: 1.5rem;
+      }
+      #sidebar-source-image img {
+        max-width: 150px;
+        max-height: 150px;
+        border-radius: 4px;
+      }
+      #sidebar-source-image ul {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        font-size: 0.9rem;
+      }
+      #sidebar-source-image li {
+        margin-bottom: 0.5rem;
+      }
+      #sidebar-source-image li strong {
+        color: #495057;
+      }
+      #filter-bar {
+        background-color: #f1f3f5;
+        padding: 1rem 2rem;
+        border-bottom: 1px solid #dee2e6;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        align-items: flex-end;
+      }
+      .filter-group {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+      }
+      .filter-group label {
+        font-size: 0.8rem;
+        font-weight: 500;
+        color: #495057;
+      }
+      .filter-group input,
+      .filter-group select {
+        padding: 0.375rem 0.75rem;
+        font-size: 0.9rem;
+        border: 1px solid #ced4da;
+        border-radius: 0.25rem;
+      }
+      .filter-group.range-group {
+        flex-direction: row;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      .filter-group.range-group input {
+        width: 60px;
+      }
+      #filter-buttons {
+        margin-left: auto;
+        display: flex;
+        gap: 0.5rem;
+      }
+      #filter-buttons button {
+        padding: 0.5rem 1rem;
+        font-size: 0.9rem;
+        border-radius: 0.25rem;
+        border: 1px solid transparent;
+        cursor: pointer;
+      }
+      #apply-filters {
+        background-color: #007bff;
+        color: white;
+        border-color: #007bff;
+      }
+      #reset-filters {
+        background-color: #6c757d;
+        color: white;
+        border-color: #6c757d;
+      }
+      #pagination-controls {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 1rem;
+        gap: 0.5rem;
+      }
+      #pagination-controls button,
+      #pagination-controls span {
+        padding: 0.5rem 0.75rem;
+        border: 1px solid #dee2e6;
+        background-color: #fff;
+        border-radius: 0.25rem;
+      }
+      #pagination-controls button:not([disabled]) {
+        cursor: pointer;
+      }
+      #pagination-controls button:disabled {
+        color: #adb5bd;
+        background-color: #e9ecef;
+      }
     </style>
-</head>
-<body>
-
-    <header><h1>Image Audit Browser</h1><div id="status">Loading...</div></header>
+  </head>
+  <body>
+    <header>
+      <h1>Image Audit Browser</h1>
+      <div id="status">Loading...</div>
+    </header>
 
     <div id="filter-bar">
-        <div class="filter-group"><label for="drive-filter">Drive</label><select id="drive-filter"></select></div>
-        <div class="filter-group"><label for="type-filter">Type</label><select id="type-filter"></select></div>
-        <div class="filter-group"><label for="path-filter">Path Contains</label><input type="text" id="path-filter"></div>
-        <div class="filter-group"><label for="filename-filter">Filename Contains</label><input type="text" id="filename-filter"></div>
-        <div class="filter-group range-group"><label>Size(KB):</label><input type="number" id="size-gt-filter" placeholder=">"> <input type="number" id="size-lt-filter" placeholder="<"></div>
-        <div class="filter-group range-group"><label>Width:</label><input type="number" id="width-gt-filter" placeholder=">"> <input type="number" id="width-lt-filter" placeholder="<"></div>
-        <div class="filter-group range-group"><label>Height:</label><input type="number" id="height-gt-filter" placeholder=">"> <input type="number" id="height-lt-filter" placeholder="<"></div>
-        <div class="filter-group range-group"><label>Similar:</label><input type="number" id="similar-gt-filter" placeholder=">"> <input type="number" id="similar-lt-filter" placeholder="<"></div>
-        <div class="filter-group range-group"><label>Duplicates:</label><input type="number" id="dupe-gt-filter" placeholder=">"> <input type="number" id="dupe-lt-filter" placeholder="<"></div>
-        <div id="filter-buttons"><button id="reset-filters">Reset</button><button id="apply-filters">Apply</button></div>
+      <div class="filter-group">
+        <label for="drive-filter">Drive</label
+        ><select id="drive-filter"></select>
+      </div>
+      <div class="filter-group">
+        <label for="type-filter">Type</label
+        ><select id="type-filter"></select>
+      </div>
+      <div class="filter-group">
+        <label for="path-filter">Path Contains</label
+        ><input type="text" id="path-filter" />
+      </div>
+      <div class="filter-group">
+        <label for="filename-filter">Filename Contains</label
+        ><input type="text" id="filename-filter" />
+      </div>
+      <div class="filter-group range-group">
+        <label>Size(KB):</label
+        ><input type="number" id="size-gt-filter" placeholder=">" />
+        <input type="number" id="size-lt-filter" placeholder="<" />
+      </div>
+      <div class="filter-group range-group">
+        <label>Width:</label
+        ><input type="number" id="width-gt-filter" placeholder=">" />
+        <input type="number" id="width-lt-filter" placeholder="<" />
+      </div>
+      <div class="filter-group range-group">
+        <label>Height:</label
+        ><input type="number" id="height-gt-filter" placeholder=">" />
+        <input type="number" id="height-lt-filter" placeholder="<" />
+      </div>
+      <div class="filter-group range-group">
+        <label>Similar:</label
+        ><input type="number" id="similar-gt-filter" placeholder=">" />
+        <input type="number" id="similar-lt-filter" placeholder="<" />
+      </div>
+      <div class="filter-group range-group">
+        <label>Duplicates:</label
+        ><input type="number" id="dupe-gt-filter" placeholder=">" />
+        <input type="number" id="dupe-lt-filter" placeholder="<" />
+      </div>
+      <div id="filter-buttons">
+        <button id="reset-filters">Reset</button
+        ><button id="apply-filters">Apply</button>
+      </div>
     </div>
 
     <main>
-        <table id="main-table"><thead><tr id="main-table-header"></tr></thead><tbody id="main-table-body"></tbody></table>
-        <div id="pagination-controls"></div>
+      <table id="main-table">
+        <thead>
+          <tr id="main-table-header"></tr>
+        </thead>
+        <tbody id="main-table-body"></tbody>
+      </table>
+      <div id="pagination-controls"></div>
     </main>
 
-    <aside id="sidebar"><div class="sidebar-header"><h2 id="sidebar-title"></h2><button id="close-sidebar">&times;</button></div><div class="sidebar-content" id="sidebar-content"><div id="sidebar-source-image"></div><div id="sidebar-list"></div></div></aside>
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <h2 id="sidebar-title"></h2>
+        <button id="close-sidebar">&times;</button>
+      </div>
+      <div class="sidebar-content" id="sidebar-content">
+        <div id="sidebar-source-image"></div>
+        <div id="sidebar-list"></div>
+      </div>
+    </aside>
 
     <script>
-        const CONFIG_PATH = 'config.json';
-        const THUMBNAILS_DIR = 'scanned-media/thumbnails';
-        const SIMILARITY_THRESHOLD = 4;
-        const ROWS_PER_PAGE = 100;
+      const CONFIG_PATH = "config.json";
+      const THUMBNAILS_DIR = "scanned-media/thumbnails";
+      const SIMILARITY_THRESHOLD = 10;
+      const ROWS_PER_PAGE = 100;
 
-        let fullDataset = [];
-        let filteredDataset = [];
-        let similarityMap = new Map();
-        let duplicatesMap = new Map();
-        let tableHeaders = [];
-        let currentPage = 1;
+      let fullDataset = [];
+      let filteredDataset = [];
+      let similarityMap = new Map();
+      let duplicatesMap = new Map();
+      let tableHeaders = [];
+      let currentPage = 1;
 
-        document.addEventListener('DOMContentLoaded', main);
+      document.addEventListener("DOMContentLoaded", main);
 
-        async function main() {
-            const statusEl = document.getElementById('status');
-            try {
-                statusEl.textContent = 'Fetching config...';
-                const configResponse = await fetch(CONFIG_PATH);
-                if (!configResponse.ok) throw new Error('config.json not found!');
-                const config = await configResponse.json();
+      async function main() {
+        const statusEl = document.getElementById("status");
+        try {
+          statusEl.textContent = "Fetching config...";
+          const configResponse = await fetch(CONFIG_PATH);
+          if (!configResponse.ok) throw new Error("config.json not found!");
+          const config = await configResponse.json();
 
-                statusEl.textContent = `Fetching and parsing ${config.tsv_files.length} TSV file(s)...`;
-                const tsvPromises = config.tsv_files.map(path => fetch(path).then(res => res.text()));
-                const tsvContents = await Promise.all(tsvPromises);
+          statusEl.textContent = `Fetching and parsing ${config.tsv_files.length} TSV file(s)...`;
+          const tsvPromises = config.tsv_files.map((path) =>
+            fetch(path).then((res) => res.text())
+          );
+          const tsvContents = await Promise.all(tsvPromises);
 
-                let allData = [];
-                let headers = [];
-                tsvContents.forEach((tsvText, index) => {
-                    if (!tsvText) return;
-                    const parsed = parseTsv(tsvText);
-                    if (index === 0) headers = parsed.headers;
-                    allData.push(...parsed.data);
-                });
-                fullDataset = allData;
-                filteredDataset = fullDataset;
-                tableHeaders = headers;
+          let allData = [];
+          let headers = [];
+          tsvContents.forEach((tsvText, index) => {
+            if (!tsvText) return;
+            const parsed = parseTsv(tsvText);
+            if (index === 0) headers = parsed.headers;
+            allData.push(...parsed.data);
+          });
+          fullDataset = allData;
+          filteredDataset = fullDataset;
+          tableHeaders = headers;
 
-                duplicatesMap = calculateDuplicates(fullDataset);
-                populateFilterControls(fullDataset);
-                setupEventListeners();
-                renderUI();
+          duplicatesMap = calculateDuplicates(fullDataset);
+          populateFilterControls(fullDataset);
+          setupEventListeners();
+          renderUI();
 
-                statusEl.textContent = 'Calculating similarities in the background... (UI is responsive)';
-                const similarityWorker = new Worker('similarity_worker.js');
-                similarityWorker.postMessage({ data: fullDataset, similarityThreshold: SIMILARITY_THRESHOLD });
-                similarityWorker.onmessage = event => {
-                    similarityMap = new Map(event.data);
-                    console.log("Similarity map received from worker.");
-                    statusEl.textContent = `Loaded and analyzed ${fullDataset.length} images from ${config.tsv_files.length} source(s).`;
-                    renderUI();
-                };
-            } catch (error) {
-                console.error('Error loading data:', error);
-                statusEl.textContent = `Error: ${error.message}.`;
-            }
-        }
-
-        function renderUI() {
-            renderMainTable();
-            renderPagination();
-        }
-
-        function parseTsv(tsvText) {
-            const lines = tsvText.trim().split('\n');
-            const headers = lines.shift().split('\t');
-            const data = lines.map(line => {
-                const values = line.split('\t');
-                const row = {};
-                headers.forEach((header, i) => { row[header] = values[i]; });
-                return row;
-            });
-            return { headers, data };
-        }
-
-        function calculateDuplicates(data) {
-            const dupeMap = new Map();
-            data.forEach(item => {
-                if (!item.SHA256 || item.SHA256 === 'N/A') return;
-                if (!dupeMap.has(item.SHA256)) {
-                    dupeMap.set(item.SHA256, []);
-                }
-                dupeMap.get(item.SHA256).push(item);
-            });
-            return dupeMap;
-        }
-
-        function populateFilterControls(data) {
-            const driveSet = new Set();
-            const typeSet = new Set();
-            data.forEach(row => {
-                driveSet.add(row.DriveName);
-                typeSet.add(row.FileType);
-            });
-            const driveFilter = document.getElementById('drive-filter');
-            const typeFilter = document.getElementById('type-filter');
-            driveFilter.innerHTML = '<option value="">All Drives</option>' + [...driveSet].sort().map(d => `<option value="${d}">${d}</option>`).join('');
-            typeFilter.innerHTML = '<option value="">All Types</option>' + [...typeSet].sort().map(t => `<option value="${t}">${t}</option>`).join('');
-        }
-
-        function applyFilters() {
-            const filters = {
-                drive: document.getElementById('drive-filter').value,
-                type: document.getElementById('type-filter').value,
-                path: document.getElementById('path-filter').value.toLowerCase(),
-                filename: document.getElementById('filename-filter').value.toLowerCase(),
-                sizeGt: parseFloat(document.getElementById('size-gt-filter').value),
-                sizeLt: parseFloat(document.getElementById('size-lt-filter').value),
-                widthGt: parseInt(document.getElementById('width-gt-filter').value),
-                widthLt: parseInt(document.getElementById('width-lt-filter').value),
-                heightGt: parseInt(document.getElementById('height-gt-filter').value),
-                heightLt: parseInt(document.getElementById('height-lt-filter').value),
-                similarGt: parseInt(document.getElementById('similar-gt-filter').value),
-                similarLt: parseInt(document.getElementById('similar-lt-filter').value),
-                dupeGt: parseInt(document.getElementById('dupe-gt-filter').value),
-                dupeLt: parseInt(document.getElementById('dupe-lt-filter').value),
-            };
-            filteredDataset = fullDataset.filter(row => {
-                const similarCount = similarityMap.get(row.FullPath)?.length || 0;
-                const dupeCount = (duplicatesMap.get(row.SHA256)?.length || 1) - 1;
-                if (filters.drive && row.DriveName !== filters.drive) return false;
-                if (filters.type && row.FileType !== filters.type) return false;
-                if (filters.path && !row.FullPath.toLowerCase().includes(filters.path)) return false;
-                if (filters.filename && !row.FileName.toLowerCase().includes(filters.filename)) return false;
-                if (!isNaN(filters.sizeGt) && parseFloat(row.FileSizeKB) <= filters.sizeGt) return false;
-                if (!isNaN(filters.sizeLt) && parseFloat(row.FileSizeKB) >= filters.sizeLt) return false;
-                if (!isNaN(filters.widthGt) && parseInt(row.Width) <= filters.widthGt) return false;
-                if (!isNaN(filters.widthLt) && parseInt(row.Width) >= filters.widthLt) return false;
-                if (!isNaN(filters.heightGt) && parseInt(row.Height) <= filters.heightGt) return false;
-                if (!isNaN(filters.heightLt) && parseInt(row.Height) >= filters.heightLt) return false;
-                if (!isNaN(filters.similarGt) && similarCount <= filters.similarGt) return false;
-                if (!isNaN(filters.similarLt) && similarCount >= filters.similarLt) return false;
-                if (!isNaN(filters.dupeGt) && dupeCount <= filters.dupeGt) return false;
-                if (!isNaN(filters.dupeLt) && dupeCount >= filters.dupeLt) return false;
-                return true;
-            });
-            currentPage = 1;
+          statusEl.textContent =
+            "Calculating similarities in the background... (UI is responsive)";
+          const similarityWorker = new Worker("similarity_worker.js");
+          similarityWorker.postMessage({
+            data: fullDataset,
+            similarityThreshold: SIMILARITY_THRESHOLD,
+          });
+          similarityWorker.onmessage = (event) => {
+            similarityMap = new Map(event.data);
+            console.log("Similarity map received from worker.");
+            statusEl.textContent = `Loaded and analyzed ${fullDataset.length} images from ${config.tsv_files.length} source(s).`;
             renderUI();
-            document.getElementById('status').textContent = `Showing ${filteredDataset.length} of ${fullDataset.length} images.`;
+          };
+        } catch (error) {
+          console.error("Error loading data:", error);
+          statusEl.textContent = `Error: ${error.message}.`;
+        }
+      }
+
+      function renderUI() {
+        renderMainTable();
+        renderPagination();
+      }
+
+      function parseTsv(tsvText) {
+        const lines = tsvText.trim().split("\n");
+        const headers = lines.shift().split("\t");
+        const data = lines.map((line) => {
+          const values = line.split("\t");
+          const row = {};
+          headers.forEach((header, i) => {
+            row[header] = values[i];
+          });
+          return row;
+        });
+        return { headers, data };
+      }
+
+      function calculateDuplicates(data) {
+        const dupeMap = new Map();
+        data.forEach((item) => {
+          if (!item.SHA256 || item.SHA256 === "N/A") return;
+          if (!dupeMap.has(item.SHA256)) {
+            dupeMap.set(item.SHA256, []);
+          }
+          dupeMap.get(item.SHA256).push(item);
+        });
+        return dupeMap;
+      }
+
+      function populateFilterControls(data) {
+        const driveSet = new Set();
+        const typeSet = new Set();
+        data.forEach((row) => {
+          driveSet.add(row.DriveName);
+          typeSet.add(row.FileType);
+        });
+        const driveFilter = document.getElementById("drive-filter");
+        const typeFilter = document.getElementById("type-filter");
+        driveFilter.innerHTML =
+          '<option value="">All Drives</option>' +
+          [...driveSet]
+            .sort()
+            .map((d) => `<option value="${d}">${d}</option>`)
+            .join("");
+        typeFilter.innerHTML =
+          '<option value="">All Types</option>' +
+          [...typeSet]
+            .sort()
+            .map((t) => `<option value="${t}">${t}</option>`)
+            .join("");
+      }
+
+      function applyFilters() {
+        const filters = {
+          drive: document.getElementById("drive-filter").value,
+          type: document.getElementById("type-filter").value,
+          path: document.getElementById("path-filter").value.toLowerCase(),
+          filename: document
+            .getElementById("filename-filter")
+            .value.toLowerCase(),
+          sizeGt: parseFloat(document.getElementById("size-gt-filter").value),
+          sizeLt: parseFloat(document.getElementById("size-lt-filter").value),
+          widthGt: parseInt(document.getElementById("width-gt-filter").value),
+          widthLt: parseInt(document.getElementById("width-lt-filter").value),
+          heightGt: parseInt(document.getElementById("height-gt-filter").value),
+          heightLt: parseInt(document.getElementById("height-lt-filter").value),
+          similarGt: parseInt(
+            document.getElementById("similar-gt-filter").value
+          ),
+          similarLt: parseInt(
+            document.getElementById("similar-lt-filter").value
+          ),
+          dupeGt: parseInt(document.getElementById("dupe-gt-filter").value),
+          dupeLt: parseInt(document.getElementById("dupe-lt-filter").value),
+        };
+        filteredDataset = fullDataset.filter((row) => {
+          const similarCount = similarityMap.get(row.FullPath)?.length || 0;
+          const dupeCount = (duplicatesMap.get(row.SHA256)?.length || 1) - 1;
+          if (filters.drive && row.DriveName !== filters.drive) return false;
+          if (filters.type && row.FileType !== filters.type) return false;
+          if (
+            filters.path &&
+            !row.FullPath.toLowerCase().includes(filters.path)
+          )
+            return false;
+          if (
+            filters.filename &&
+            !row.FileName.toLowerCase().includes(filters.filename)
+          )
+            return false;
+          if (
+            !isNaN(filters.sizeGt) &&
+            parseFloat(row.FileSizeKB) <= filters.sizeGt
+          )
+            return false;
+          if (
+            !isNaN(filters.sizeLt) &&
+            parseFloat(row.FileSizeKB) >= filters.sizeLt
+          )
+            return false;
+          if (!isNaN(filters.widthGt) && parseInt(row.Width) <= filters.widthGt)
+            return false;
+          if (!isNaN(filters.widthLt) && parseInt(row.Width) >= filters.widthLt)
+            return false;
+          if (
+            !isNaN(filters.heightGt) &&
+            parseInt(row.Height) <= filters.heightGt
+          )
+            return false;
+          if (
+            !isNaN(filters.heightLt) &&
+            parseInt(row.Height) >= filters.heightLt
+          )
+            return false;
+          if (!isNaN(filters.similarGt) && similarCount <= filters.similarGt)
+            return false;
+          if (!isNaN(filters.similarLt) && similarCount >= filters.similarLt)
+            return false;
+          if (!isNaN(filters.dupeGt) && dupeCount <= filters.dupeGt)
+            return false;
+          if (!isNaN(filters.dupeLt) && dupeCount >= filters.dupeLt)
+            return false;
+          return true;
+        });
+        currentPage = 1;
+        renderUI();
+        document.getElementById(
+          "status"
+        ).textContent = `Showing ${filteredDataset.length} of ${fullDataset.length} images.`;
+      }
+
+      function renderMainTable() {
+        const tableHeader = document.getElementById("main-table-header");
+        const tableBody = document.getElementById("main-table-body");
+        const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
+        const endIndex = startIndex + ROWS_PER_PAGE;
+        const pageData = filteredDataset.slice(startIndex, endIndex);
+
+        const excludedColumns = new Set([
+          "DateTime",
+          "Copyright",
+          "Artist",
+          "Software",
+          "ImageDescription",
+          "Keywords",
+          "PerceptualHash",
+          "SHA256",
+        ]);
+        const filteredHeaders = tableHeaders.filter(
+          (h) => !excludedColumns.has(h)
+        );
+        const displayHeaders = [
+          "Thumbnail",
+          ...filteredHeaders,
+          "Duplicates",
+          "Similar Images",
+        ];
+        tableHeader.innerHTML = displayHeaders
+          .map((h) => `<th>${h}</th>`)
+          .join("");
+
+        const rowsHtml = pageData
+          .map((row) => {
+            const dupeCount = (duplicatesMap.get(row.SHA256)?.length || 1) - 1;
+            const similarCount = similarityMap.get(row.FullPath)?.length || 0;
+            const dupeDisplay =
+              dupeCount > 0
+                ? `<a href="#" class="clickable-link duplicate-link" data-path="${row.FullPath}">${dupeCount}</a>`
+                : "0";
+            const similarDisplay =
+              similarCount > 0
+                ? `<a href="#" class="clickable-link similar-link" data-path="${row.FullPath}">${similarCount}</a>`
+                : "0";
+            const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.PerceptualHash}.jpg" alt="thumbnail" loading="lazy"></td>`;
+            const dataCells = filteredHeaders
+              .map((header) => `<td>${row[header]}</td>`)
+              .join("");
+            return `<tr data-row-path="${row.FullPath}">${thumbnailCell}${dataCells}<td>${dupeDisplay}</td><td>${similarDisplay}</td></tr>`;
+          })
+          .join("");
+        tableBody.innerHTML = rowsHtml;
+      }
+
+      function renderPagination() {
+        const controls = document.getElementById("pagination-controls");
+        const totalPages = Math.ceil(filteredDataset.length / ROWS_PER_PAGE);
+        if (totalPages <= 1) {
+          controls.innerHTML = "";
+          return;
         }
 
-        function renderMainTable() {
-            const tableHeader = document.getElementById('main-table-header');
-            const tableBody = document.getElementById('main-table-body');
-            const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
-            const endIndex = startIndex + ROWS_PER_PAGE;
-            const pageData = filteredDataset.slice(startIndex, endIndex);
+        let buttonsHtml = ``;
+        buttonsHtml += `<button data-page="1" ${
+          currentPage === 1 ? "disabled" : ""
+        }>&laquo; First</button>`;
+        buttonsHtml += `<button data-page="${currentPage - 1}" ${
+          currentPage === 1 ? "disabled" : ""
+        }>&lsaquo; Prev</button>`;
+        buttonsHtml += `<span>Page ${currentPage} of ${totalPages}</span>`;
+        buttonsHtml += `<button data-page="${currentPage + 1}" ${
+          currentPage === totalPages ? "disabled" : ""
+        }>Next &rsaquo;</button>`;
+        buttonsHtml += `<button data-page="${totalPages}" ${
+          currentPage === totalPages ? "disabled" : ""
+        }>Last &raquo;</button>`;
+        controls.innerHTML = buttonsHtml;
+      }
 
-            const excludedColumns = new Set(['DateTime', 'Copyright', 'Artist', 'Software', 'ImageDescription', 'Keywords', 'PerceptualHash', 'SHA256']);
-            const filteredHeaders = tableHeaders.filter(h => !excludedColumns.has(h));
-            const displayHeaders = ['Thumbnail', ...filteredHeaders, 'Duplicates', 'Similar Images'];
-            tableHeader.innerHTML = displayHeaders.map(h => `<th>${h}</th>`).join('');
-
-            const rowsHtml = pageData.map(row => {
-                const dupeCount = (duplicatesMap.get(row.SHA256)?.length || 1) - 1;
-                const similarCount = similarityMap.get(row.FullPath)?.length || 0;
-                const dupeDisplay = dupeCount > 0 ? `<a href="#" class="clickable-link duplicate-link" data-path="${row.FullPath}">${dupeCount}</a>` : '0';
-                const similarDisplay = similarCount > 0 ? `<a href="#" class="clickable-link similar-link" data-path="${row.FullPath}">${similarCount}</a>` : '0';
-                const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.PerceptualHash}.jpg" alt="thumbnail" loading="lazy"></td>`;
-                const dataCells = filteredHeaders.map(header => `<td>${row[header]}</td>`).join('');
-                return `<tr data-row-path="${row.FullPath}">${thumbnailCell}${dataCells}<td>${dupeDisplay}</td><td>${similarDisplay}</td></tr>`;
-            }).join('');
-            tableBody.innerHTML = rowsHtml;
-        }
-
-        function renderPagination() {
-            const controls = document.getElementById('pagination-controls');
-            const totalPages = Math.ceil(filteredDataset.length / ROWS_PER_PAGE);
-            if (totalPages <= 1) {
-                controls.innerHTML = '';
-                return;
-            }
-
-            let buttonsHtml = ``;
-            buttonsHtml += `<button data-page="1" ${currentPage === 1 ? 'disabled' : ''}>&laquo; First</button>`;
-            buttonsHtml += `<button data-page="${currentPage - 1}" ${currentPage === 1 ? 'disabled' : ''}>&lsaquo; Prev</button>`;
-            buttonsHtml += `<span>Page ${currentPage} of ${totalPages}</span>`;
-            buttonsHtml += `<button data-page="${currentPage + 1}" ${currentPage === totalPages ? 'disabled' : ''}>Next &rsaquo;</button>`;
-            buttonsHtml += `<button data-page="${totalPages}" ${currentPage === totalPages ? 'disabled' : ''}>Last &raquo;</button>`;
-            controls.innerHTML = buttonsHtml;
-        }
-
-        function renderSourceImageDetails(container, sourceImage) {
-             container.innerHTML = `
+      function renderSourceImageDetails(container, sourceImage) {
+        container.innerHTML = `
                 <img src="${THUMBNAILS_DIR}/${sourceImage.PerceptualHash}.jpg" alt="Source thumbnail">
                 <div>
                     <ul>
@@ -263,86 +579,142 @@
                     </ul>
                 </div>
             `;
+      }
+
+      function renderSidebarTable(container, sourceImage, items, type) {
+        const list = items.filter(
+          (img) => img.FullPath !== sourceImage.FullPath
+        );
+        if (!list || list.length === 0) {
+          container.innerHTML = `<p>No other ${type} found.</p>`;
+          return;
         }
+        const excludedColumns = new Set([
+          "DateTime",
+          "Copyright",
+          "Artist",
+          "Software",
+          "ImageDescription",
+          "Keywords",
+          "PerceptualHash",
+          "SHA256",
+        ]);
+        const filteredHeaders = tableHeaders.filter(
+          (h) => !excludedColumns.has(h)
+        );
+        const distanceHeader =
+          type === "duplicates" ? "" : "<th>Similarity Distance</th>";
+        const displayHeaders = ["Thumbnail", ...filteredHeaders];
+        let table = `<table><thead><tr>${displayHeaders
+          .map((h) => `<th>${h}</th>`)
+          .join("")}${distanceHeader}</tr></thead><tbody>`;
+        table += list
+          .map((row) => {
+            const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.PerceptualHash}.jpg" alt="thumbnail" loading="lazy"></td>`;
+            const dataCells = filteredHeaders
+              .map((header) => `<td>${row[header]}</td>`)
+              .join("");
+            const distanceCell =
+              type === "duplicates" ? "" : `<td>${row.distance}</td>`;
+            return `<tr>${thumbnailCell}${dataCells}${distanceCell}</tr>`;
+          })
+          .join("");
+        table += "</tbody></table>";
+        container.innerHTML = table;
+      }
 
-        function renderSidebarTable(container, sourceImage, items, type) {
-            const list = items.filter(img => img.FullPath !== sourceImage.FullPath);
-            if (!list || list.length === 0) {
-                container.innerHTML = `<p>No other ${type} found.</p>`;
-                return;
-            }
-            const excludedColumns = new Set(['DateTime', 'Copyright', 'Artist', 'Software', 'ImageDescription', 'Keywords', 'PerceptualHash', 'SHA256']);
-            const filteredHeaders = tableHeaders.filter(h => !excludedColumns.has(h));
-            const distanceHeader = type === 'duplicates' ? '' : '<th>Similarity Distance</th>';
-            const displayHeaders = ['Thumbnail', ...filteredHeaders];
-            let table = `<table><thead><tr>${displayHeaders.map(h => `<th>${h}</th>`).join('')}${distanceHeader}</tr></thead><tbody>`;
-            table += list.map(row => {
-                const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.PerceptualHash}.jpg" alt="thumbnail" loading="lazy"></td>`;
-                const dataCells = filteredHeaders.map(header => `<td>${row[header]}</td>`).join('');
-                const distanceCell = type === 'duplicates' ? '' : `<td>${row.distance}</td>`;
-                return `<tr>${thumbnailCell}${dataCells}${distanceCell}</tr>`;
-            }).join('');
-            table += '</tbody></table>';
-            container.innerHTML = table;
-        }
+      function setupEventListeners() {
+        const sidebar = document.getElementById("sidebar");
+        const mainTableBody = document.getElementById("main-table-body");
+        const clearSelection = () => {
+          const selected = document.querySelector(".selected-row");
+          if (selected) selected.classList.remove(".selected-row");
+        };
 
-        function setupEventListeners() {
-            const sidebar = document.getElementById('sidebar');
-            const mainTableBody = document.getElementById('main-table-body');
-            const clearSelection = () => { const selected = document.querySelector('.selected-row'); if (selected) selected.classList.remove('.selected-row'); };
+        document
+          .getElementById("close-sidebar")
+          .addEventListener("click", () => {
+            sidebar.classList.remove("visible");
+            clearSelection();
+          });
 
-            document.getElementById('close-sidebar').addEventListener('click', () => { sidebar.classList.remove('visible'); clearSelection(); });
+        mainTableBody.addEventListener("click", (event) => {
+          const link = event.target.closest(".clickable-link");
+          if (!link) return;
 
-            mainTableBody.addEventListener('click', (event) => {
-                const link = event.target.closest('.clickable-link');
-                if (!link) return;
+          event.preventDefault();
+          clearSelection();
+          const rowElement = event.target.closest("tr");
+          rowElement.classList.add("selected-row");
 
+          const path = link.dataset.path;
+          const sourceImage = fullDataset.find(
+            (item) => item.FullPath === path
+          );
+          let items, type;
+
+          if (link.classList.contains("similar-link")) {
+            document.getElementById("sidebar-title").textContent =
+              "Similar to...";
+            items = similarityMap.get(path);
+            type = "similar images";
+          } else {
+            document.getElementById("sidebar-title").textContent =
+              "Exact Duplicates of...";
+            items = duplicatesMap.get(sourceImage.SHA256);
+            type = "duplicates";
+          }
+
+          renderSourceImageDetails(
+            document.getElementById("sidebar-source-image"),
+            sourceImage
+          );
+          renderSidebarTable(
+            document.getElementById("sidebar-list"),
+            sourceImage,
+            items,
+            type
+          );
+          sidebar.classList.add("visible");
+        });
+
+        document
+          .getElementById("apply-filters")
+          .addEventListener("click", applyFilters);
+        document
+          .getElementById("reset-filters")
+          .addEventListener("click", () => {
+            document
+              .getElementById("filter-bar")
+              .querySelectorAll("input, select")
+              .forEach((el) => (el.value = ""));
+            applyFilters();
+          });
+
+        document
+          .getElementById("filter-bar")
+          .querySelectorAll("input")
+          .forEach((input) => {
+            input.addEventListener("keydown", (event) => {
+              if (event.key === "Enter") {
                 event.preventDefault();
-                clearSelection();
-                const rowElement = event.target.closest('tr');
-                rowElement.classList.add('selected-row');
-                
-                const path = link.dataset.path;
-                const sourceImage = fullDataset.find(item => item.FullPath === path);
-                let items, type;
-
-                if (link.classList.contains('similar-link')) {
-                    document.getElementById('sidebar-title').textContent = 'Similar to...';
-                    items = similarityMap.get(path);
-                    type = 'similar images';
-                } else {
-                    document.getElementById('sidebar-title').textContent = 'Exact Duplicates of...';
-                    items = duplicatesMap.get(sourceImage.SHA256);
-                    type = 'duplicates';
-                }
-
-                renderSourceImageDetails(document.getElementById('sidebar-source-image'), sourceImage);
-                renderSidebarTable(document.getElementById('sidebar-list'), sourceImage, items, type);
-                sidebar.classList.add('visible');
-            });
-
-            document.getElementById('apply-filters').addEventListener('click', applyFilters);
-            document.getElementById('reset-filters').addEventListener('click', () => {
-                document.getElementById('filter-bar').querySelectorAll('input, select').forEach(el => el.value = '');
                 applyFilters();
+              }
             });
+          });
 
-            document.getElementById('filter-bar').querySelectorAll('input').forEach(input => {
-                input.addEventListener('keydown', (event) => {
-                    if (event.key === 'Enter') { event.preventDefault(); applyFilters(); }
-                });
-            });
-
-            document.getElementById('pagination-controls').addEventListener('click', event => {
-                if (event.target.tagName === 'BUTTON') {
-                    const newPage = parseInt(event.target.dataset.page);
-                    if (newPage && newPage !== currentPage) {
-                        currentPage = newPage;
-                        renderUI();
-                    }
-                }
-            });
-        }
+        document
+          .getElementById("pagination-controls")
+          .addEventListener("click", (event) => {
+            if (event.target.tagName === "BUTTON") {
+              const newPage = parseInt(event.target.dataset.page);
+              if (newPage && newPage !== currentPage) {
+                currentPage = newPage;
+                renderUI();
+              }
+            }
+          });
+      }
     </script>
-</body>
+  </body>
 </html>
