@@ -383,7 +383,7 @@
         const driveSet = new Set();
         const typeSet = new Set();
         data.forEach((row) => {
-          driveSet.add(row.DriveName);
+          driveSet.add(row.Identifier);
           typeSet.add(row.FileType);
         });
         const driveFilter = document.getElementById("drive-filter");
@@ -428,7 +428,7 @@
         filteredDataset = fullDataset.filter((row) => {
           const similarCount = similarityMap.get(row.FullPath)?.length || 0;
           const dupeCount = (duplicatesMap.get(row.SHA256)?.length || 1) - 1;
-          if (filters.drive && row.DriveName !== filters.drive) return false;
+          if (filters.drive && row.Identifier !== filters.drive) return false;
           if (filters.type && row.FileType !== filters.type) return false;
           if (
             filters.path &&
@@ -565,7 +565,7 @@
                     <ul>
                         <li><strong>File:</strong> ${sourceImage.FileName}</li>
                         <li><strong>Path:</strong> ${sourceImage.FullPath}</li>
-                        <li><strong>Drive:</strong> ${sourceImage.DriveName}</li>
+                        <li><strong>Drive:</strong> ${sourceImage.Identifier}</li>
                     </ul>
                 </div>
             `;

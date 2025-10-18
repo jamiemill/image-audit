@@ -57,7 +57,7 @@ def create_thumbnail(path, thumbnails_dir, hash_str):
     except Exception:
         return False
 
-def process_single_image_for_scan(full_path, drivename, min_size_kb, extensions):
+def process_single_image_for_scan(full_path, identifier, min_size_kb, extensions):
     """
     Worker function to process a single image file for the scan mode.
     Returns a data row for the CSV on success, or None on failure/skip.
@@ -87,7 +87,7 @@ def process_single_image_for_scan(full_path, drivename, min_size_kb, extensions)
         exif_data = get_exif_data(full_path)
 
         return [
-            drivename,
+            identifier,
             full_path,
             os.path.basename(full_path),
             file_ext[1:],
@@ -126,7 +126,7 @@ def create_thumbnail_and_phash(input_row, full_path_index, sha256_index, phash_i
     input_row[phash_index] = perceptual_hash_str
     return input_row
 
-def scan_mode(drivename, root_dir, catalog_file, min_size_kb, extensions):
+def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions):
     """Scans a directory, gathers image metadata, and saves it to a CSV catalog."""
     processed_paths = set()
     is_new_file = not os.path.exists(catalog_file) or os.path.getsize(catalog_file) == 0
@@ -162,7 +162,7 @@ def scan_mode(drivename, root_dir, catalog_file, min_size_kb, extensions):
         
         if is_new_file:
             header = [
-                'DriveName', 'FullPath', 'FileName', 'FileType', 'FileSizeKB', 'PerceptualHash', 'SHA256',
+                'Identifier', 'FullPath', 'FileName', 'FileType', 'FileSizeKB', 'PerceptualHash', 'SHA256',
                 'Width', 'Height', 'DateTime', 'Copyright', 'Artist', 'Software',
                 'ImageDescription', 'Keywords'
             ]
@@ -171,7 +171,7 @@ def scan_mode(drivename, root_dir, catalog_file, min_size_kb, extensions):
 
         with concurrent.futures.ProcessPoolExecutor() as executor:
             worker_func = partial(process_single_image_for_scan,
-                                  drivename=drivename,
+                                  identifier=identifier,
                                   min_size_kb=min_size_kb,
                                   extensions=extensions)
             
