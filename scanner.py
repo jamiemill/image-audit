@@ -55,10 +55,10 @@ def create_thumbnail(path, thumbnails_dir, hash_str):
     except Exception:
         return False
 
-def process_single_image(full_path, drivename, thumbnails_dir, min_size_kb, extensions):
+def process_single_image_for_scan(full_path, drivename, min_size_kb, extensions):
     """
-    Worker function to process a single image file.
-    Returns a data row for the TSV on success, or None on failure/skip.
+    Worker function to process a single image file for the scan mode.
+    Returns a data row for the CSV on success, or None on failure/skip.
     """
     try:
         file_ext = os.path.splitext(full_path)[1].lower()
@@ -83,9 +83,6 @@ def process_single_image(full_path, drivename, thumbnails_dir, min_size_kb, exte
             perceptual_hash_str = str(perceptual_hash_val)
         except Exception:
             return None
-        
-        if not create_thumbnail(full_path, thumbnails_dir, sha256_hex):
-            return None
 
         exif_data = get_exif_data(full_path)
 
@@ -109,24 +106,22 @@ def process_single_image(full_path, drivename, thumbnails_dir, min_size_kb, exte
     except (IOError, OSError):
         return None
 
-def scan_directory(drivename, root_dir, output_tsv, thumbnails_dir, min_size_kb, extensions):
-    """Scans a directory in parallel, processes images, and logs data idempotently."""
-    os.makedirs(thumbnails_dir, exist_ok=True)
-
+def scan_mode(drivename, root_dir, catalog_file, min_size_kb, extensions):
+    """Scans a directory, gathers image metadata, and saves it to a CSV catalog."""
     processed_paths = set()
-    is_new_file = not os.path.exists(output_tsv) or os.path.getsize(output_tsv) == 0
+    is_new_file = not os.path.exists(catalog_file) or os.path.getsize(catalog_file) == 0
     if not is_new_file:
         try:
-            with open(output_tsv, 'r', newline='', encoding='utf-8') as tsvfile:
-                reader = csv.reader(tsvfile, delimiter='\t')
+            with open(catalog_file, 'r', newline='', encoding='utf-8') as csvfile:
+                reader = csv.reader(csvfile)
                 header = next(reader)
                 full_path_index = header.index('FullPath')
                 for row in reader:
                     if len(row) > full_path_index:
                         processed_paths.add(row[full_path_index])
-            print(f"Found {len(processed_paths)} already processed files in the log.")
+            print(f"Found {len(processed_paths)} files already in the catalog.")
         except (IOError, StopIteration, ValueError) as e:
-            print(f"Warning: Could not read existing log file. Starting fresh. Error: {e}")
+            print(f"Warning: Could not read existing catalog file. Starting fresh. Error: {e}")
             is_new_file = True
 
     all_files_in_dir = []
@@ -142,8 +137,8 @@ def scan_directory(drivename, root_dir, output_tsv, thumbnails_dir, min_size_kb,
 
     print(f"Total files to process: {len(files_to_process)}")
 
-    with open(output_tsv, 'a', newline='', encoding='utf-8') as tsvfile:
-        writer = csv.writer(tsvfile, delimiter='\t')
+    with open(catalog_file, 'a', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile)
         
         if is_new_file:
             header = [
@@ -152,12 +147,11 @@ def scan_directory(drivename, root_dir, output_tsv, thumbnails_dir, min_size_kb,
                 'ImageDescription', 'Keywords'
             ]
             writer.writerow(header)
-            tsvfile.flush()
+            csvfile.flush()
 
         with concurrent.futures.ProcessPoolExecutor() as executor:
-            worker_func = partial(process_single_image,
+            worker_func = partial(process_single_image_for_scan,
                                   drivename=drivename,
-                                  thumbnails_dir=thumbnails_dir,
                                   min_size_kb=min_size_kb,
                                   extensions=extensions)
             
@@ -166,33 +160,79 @@ def scan_directory(drivename, root_dir, output_tsv, thumbnails_dir, min_size_kb,
             for row_data in tqdm(results, total=len(files_to_process), desc="Scanning New Images"):
                 if row_data:
                     writer.writerow(row_data)
-                    tsvfile.flush()
+                    csvfile.flush()
+
+def thumbnail_mode(catalog_file, thumbnails_dir):
+    """Generates thumbnails for all images listed in the catalog file."""
+    os.makedirs(thumbnails_dir, exist_ok=True)
+
+    try:
+        with open(catalog_file, 'r', newline='', encoding='utf-8') as csvfile:
+            reader = csv.reader(csvfile)
+            header = next(reader)
+            full_path_index = header.index('FullPath')
+            sha256_index = header.index('SHA256')
+            
+            images_to_thumbnail = list(reader)
+            if not images_to_thumbnail:
+                print("No images found in the catalog file.")
+                return
+
+            print(f"Found {len(images_to_thumbnail)} images to thumbnail.")
+
+            paths = [row[full_path_index] for row in images_to_thumbnail]
+            hashes = [row[sha256_index] for row in images_to_thumbnail]
+
+            with concurrent.futures.ProcessPoolExecutor() as executor:
+                from itertools import repeat
+                results = executor.map(create_thumbnail, paths, repeat(thumbnails_dir), hashes)
+
+                for _ in tqdm(results, total=len(images_to_thumbnail), desc="Generating Thumbnails"):
+                    pass
+
+    except (IOError, StopIteration, ValueError) as e:
+        print(f"Error: Could not read catalog file. {e}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Recursively scan a directory for images, extract metadata, and create thumbnails.")
-    parser.add_argument('--drivename', type=str, required=True, help='A name to identify the drive being scanned, e.g., \'WD_BLACK_1\'.')
-    parser.add_argument('--directory', type=str, required=True, help='The root directory to scan.')
-    parser.add_argument('--output-tsv', type=str, required=True, help='Path to the output TSV log file.')
-    parser.add_argument('--thumbnails-dir', type=str, required=True, help='Directory to store generated thumbnails.')
-    parser.add_argument('--min-size', type=int, default=100, help='Minimum file size in KB to process (default: 100).')
-    parser.add_argument('--extensions', type=str, default='jpg,jpeg,png,tiff,tif,psd,png', help='Comma-separated list of image extensions to scan (e.g., jpg,png,nef).')
-    
-    args = parser.parse_args()
-    
-    extensions_set = set(args.extensions.lower().split(','))
-    
-    print(f"Starting scan on drive: {args.drivename}")
-    print(f"Scanning directory: {args.directory}")
-    print(f"Allowed extensions: {', '.join(extensions_set)}")
-    print(f"Minimum size: {args.min_size} KB")
-    print(f"Logging to: {args.output_tsv}")
-    print(f"Thumbnails in: {args.thumbnails_dir}")
+    parser = argparse.ArgumentParser(description="Scan for images and generate thumbnails in two steps.")
+    parser.add_argument('--mode', type=str, choices=['scan', 'thumbnail'], default='scan', help='The mode to run in: "scan" to find files and create a catalog, or "thumbnail" to generate thumbnails from a catalog.')
+    parser.add_argument('--catalog-file', type=str, default='catalog.csv', help='Path to the catalog CSV file.')
+    parser.add_argument('--drivename', type=str, help='A name for the drive being scanned (required for "scan" mode).')
+    parser.add_argument('--directory', type=str, help='The root directory to scan (required for "scan" mode).')
+    parser.add_argument('--thumbnails-dir', type=str, help='Directory to store thumbnails (required for "thumbnail" mode).')
+    parser.add_argument('--min-size', type=int, default=100, help='Minimum file size in KB (for "scan" mode).')
+    parser.add_argument('--extensions', type=str, default='jpg,jpeg,png,tiff,tif,psd', help='Comma-separated image extensions to scan.')
 
-    scan_directory(args.drivename, args.directory, args.output_tsv, args.thumbnails_dir, args.min_size, extensions_set)
-    
-    print("\nScan complete.")
-    print(f"Log file created at: {args.output_tsv}")
-    print(f"Thumbnails saved in: {args.thumbnails_dir}")
+    args = parser.parse_args()
+    extensions_set = set(args.extensions.lower().split(','))
+
+    if args.mode == 'scan':
+        if not all([args.drivename, args.directory]):
+            parser.error("--drivename and --directory are required for 'scan' mode.")
+        
+        print(f"Starting scan on drive: {args.drivename}")
+        print(f"Scanning directory: {args.directory}")
+        print(f"Allowed extensions: {', '.join(extensions_set)}")
+        print(f"Minimum size: {args.min_size} KB")
+        print(f"Cataloging to: {args.catalog_file}")
+
+        scan_mode(args.drivename, args.directory, args.catalog_file, args.min_size, extensions_set)
+        
+        print("\nScan complete.")
+        print(f"Catalog file created at: {args.catalog_file}")
+
+    elif args.mode == 'thumbnail':
+        if not args.thumbnails_dir:
+            parser.error("--thumbnails-dir is required for 'thumbnail' mode.")
+
+        print(f"Generating thumbnails from: {args.catalog_file}")
+        print(f"Thumbnails will be saved in: {args.thumbnails_dir}")
+        
+        thumbnail_mode(args.catalog_file, args.thumbnails_dir)
+        
+        print("\nThumbnail generation complete.")
+        print(f"Thumbnails saved in: {args.thumbnails_dir}")
+
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
