@@ -217,6 +217,10 @@
         color: #adb5bd;
         background-color: #e9ecef;
       }
+      .numeric-cell {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
     </style>
   </head>
   <body>
@@ -498,17 +502,27 @@
           "PerceptualHash",
           "SHA256",
         ]);
+        const numericHeaders = new Set([
+          "Width",
+          "Height",
+          "FileSize",
+          "Duplicates",
+          "Similar Images",
+        ]);
         const filteredHeaders = tableHeaders.filter(
           (h) => !excludedColumns.has(h)
         );
         const displayHeaders = [
           "Thumbnail",
-          ...filteredHeaders,
+          ...filteredHeaders.map((h) => (h === "FileSizeKB" ? "FileSize" : h)),
           "Duplicates",
           "Similar Images",
         ];
         tableHeader.innerHTML = displayHeaders
-          .map((h) => `<th>${h}</th>`)
+          .map(
+            (h) =>
+              `<th class="${numericHeaders.has(h) ? "numeric-cell" : ""}">${h}</th>`
+          )
           .join("");
 
         const rowsHtml = pageData
@@ -525,9 +539,43 @@
                 : "0";
             const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.SHA256}.webp" alt="thumbnail" loading="lazy"></td>`;
             const dataCells = filteredHeaders
-              .map((header) => `<td>${row[header]}</td>`)
+              .map((header) => {
+                let cellValue;
+                const displayHeader =
+                  header === "FileSizeKB" ? "FileSize" : header;
+                const className =
+                  numericHeaders.has(displayHeader) ? ' class="numeric-cell"' : "";
+                switch (header) {
+                  case "Width":
+                  case "Height":
+                    cellValue = Number(row[header]).toLocaleString("en-US");
+                    break;
+                  case "FileSizeKB":
+                    cellValue = `${(Number(row[header]) / 1024).toFixed(
+                      1
+                    )} MB`;
+                    break;
+                  case "FullPath":
+                    const parts = row[header].split("/");
+                    const directoryPathParts = parts.slice(0, -1);
+                    if (directoryPathParts.length <= 3) {
+                      cellValue = directoryPathParts.join("/");
+                    } else {
+                      const truncated = directoryPathParts.slice(-3).join("/");
+                      const fullDirectoryPath = directoryPathParts.join("/");
+                      cellValue =
+                        `<span class="path-container" data-full-path="${fullDirectoryPath}">` +
+                        `<span class="path-expander" style="cursor: pointer; color: #007bff;">▾...</span>/${truncated}` +
+                        `</span>`;
+                    }
+                    break;
+                  default:
+                    cellValue = row[header];
+                }
+                return `<td${className}>${cellValue}</td>`;
+              })
               .join("");
-            return `<tr data-row-path="${row.FullPath}">${thumbnailCell}${dataCells}<td>${dupeDisplay}</td><td>${similarDisplay}</td></tr>`;
+            return `<tr data-row-path="${row.FullPath}">${thumbnailCell}${dataCells}<td class="numeric-cell">${dupeDisplay}</td><td class="numeric-cell">${similarDisplay}</td></tr>`;
           })
           .join("");
         tableBody.innerHTML = rowsHtml;
@@ -589,23 +637,73 @@
           "PerceptualHash",
           "SHA256",
         ]);
+        const numericHeaders = new Set([
+          "Width",
+          "Height",
+          "FileSize",
+          "Similarity Distance",
+        ]);
         const filteredHeaders = tableHeaders.filter(
           (h) => !excludedColumns.has(h)
         );
         const distanceHeader =
-          type === "duplicates" ? "" : "<th>Similarity Distance</th>";
-        const displayHeaders = ["Thumbnail", ...filteredHeaders];
+          type === "duplicates"
+            ? ""
+            : `<th class="numeric-cell">Similarity Distance</th>`;
+        const displayHeaders = [
+          "Thumbnail",
+          ...filteredHeaders.map((h) => (h === "FileSizeKB" ? "FileSize" : h)),
+        ];
         let table = `<table><thead><tr>${displayHeaders
-          .map((h) => `<th>${h}</th>`)
+          .map(
+            (h) =>
+              `<th class="${numericHeaders.has(h) ? "numeric-cell" : ""}">${h}</th>`
+          )
           .join("")}${distanceHeader}</tr></thead><tbody>`;
         table += list
           .map((row) => {
             const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.SHA256}.webp" alt="thumbnail" loading="lazy"></td>`;
             const dataCells = filteredHeaders
-              .map((header) => `<td>${row[header]}</td>`)
+              .map((header) => {
+                let cellValue;
+                const displayHeader =
+                  header === "FileSizeKB" ? "FileSize" : header;
+                const className =
+                  numericHeaders.has(displayHeader) ? ' class="numeric-cell"' : "";
+                switch (header) {
+                  case "Width":
+                  case "Height":
+                    cellValue = Number(row[header]).toLocaleString("en-US");
+                    break;
+                  case "FileSizeKB":
+                    cellValue = `${(Number(row[header]) / 1024).toFixed(
+                      1
+                    )} MB`;
+                    break;
+                  case "FullPath":
+                    const parts = row[header].split("/");
+                    const directoryPathParts = parts.slice(0, -1);
+                    if (directoryPathParts.length <= 3) {
+                      cellValue = directoryPathParts.join("/");
+                    } else {
+                      const truncated = directoryPathParts.slice(-3).join("/");
+                      const fullDirectoryPath = directoryPathParts.join("/");
+                      cellValue =
+                        `<span class="path-container" data-full-path="${fullDirectoryPath}">` +
+                        `<span class="path-expander" style="cursor: pointer; color: #007bff;">▾...</span>/${truncated}` +
+                        `</span>`;
+                    }
+                    break;
+                  default:
+                    cellValue = row[header];
+                }
+                return `<td${className}>${cellValue}</td>`;
+              })
               .join("");
             const distanceCell =
-              type === "duplicates" ? "" : `<td>${row.distance}</td>`;
+              type === "duplicates"
+                ? ""
+                : `<td class="numeric-cell">${row.distance}</td>`;
             return `<tr>${thumbnailCell}${dataCells}${distanceCell}</tr>`;
           })
           .join("");
@@ -640,6 +738,13 @@
         });
 
         mainTableBody.addEventListener("click", (event) => {
+          if (event.target.classList.contains("path-expander")) {
+            const container = event.target.parentElement;
+            const fullPath = container.dataset.fullPath;
+            container.parentElement.innerHTML = fullPath;
+            return;
+          }
+
           const link = event.target.closest(".clickable-link");
           if (!link) return;
 
