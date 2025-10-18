@@ -316,17 +316,17 @@
           if (!configResponse.ok) throw new Error("config.json not found!");
           const config = await configResponse.json();
 
-          statusEl.textContent = `Fetching and parsing ${config.tsv_files.length} TSV file(s)...`;
-          const tsvPromises = config.tsv_files.map((path) =>
+          statusEl.textContent = `Fetching and parsing ${config.csv_files.length} CSV file(s)...`;
+          const csvPromises = config.csv_files.map((path) =>
             fetch(path).then((res) => res.text())
           );
-          const tsvContents = await Promise.all(tsvPromises);
+          const csvContents = await Promise.all(csvPromises);
 
           let allData = [];
           let headers = [];
-          tsvContents.forEach((tsvText, index) => {
-            if (!tsvText) return;
-            const parsed = parseTsv(tsvText);
+          csvContents.forEach((csvText, index) => {
+            if (!csvText) return;
+            const parsed = parseCsv(csvText);
             if (index === 0) headers = parsed.headers;
             allData.push(...parsed.data);
           });
@@ -349,7 +349,7 @@
           similarityWorker.onmessage = (event) => {
             similarityMap = new Map(event.data);
             console.log("Similarity map received from worker.");
-            statusEl.textContent = `Loaded and analyzed ${fullDataset.length} images from ${config.tsv_files.length} source(s).`;
+            statusEl.textContent = `Loaded and analyzed ${fullDataset.length} images from ${config.csv_files.length} source(s).`;
             renderUI();
           };
         } catch (error) {
@@ -363,11 +363,11 @@
         renderPagination();
       }
 
-      function parseTsv(tsvText) {
-        const lines = tsvText.trim().split("\n");
-        const headers = lines.shift().split("\t");
+      function parseCsv(csvText) {
+        const lines = csvText.trim().split("\n");
+        const headers = lines.shift().split(",");
         const data = lines.map((line) => {
-          const values = line.split("\t");
+          const values = line.split(",");
           const row = {};
           headers.forEach((header, i) => {
             row[header] = values[i];
