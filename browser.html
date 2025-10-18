@@ -628,6 +628,17 @@
             clearSelection();
           });
 
+        document.addEventListener("click", (event) => {
+          if (
+            sidebar.classList.contains("visible") &&
+            !event.target.closest("#sidebar") &&
+            !event.target.closest(".clickable-link")
+          ) {
+            sidebar.classList.remove("visible");
+            clearSelection();
+          }
+        });
+
         mainTableBody.addEventListener("click", (event) => {
           const link = event.target.closest(".clickable-link");
           if (!link) return;
