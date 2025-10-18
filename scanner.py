@@ -44,7 +44,7 @@ def get_exif_data(path):
 
 def create_thumbnail(path, thumbnails_dir, hash_str):
     """Creates a high-quality, aspect-ratio-preserved thumbnail, skipping if it already exists."""
-    thumbnail_path = os.path.join(thumbnails_dir, f"{hash_str}.jpg")
+    thumbnail_path = os.path.join(thumbnails_dir, f"{hash_str}.webp")
     if os.path.exists(thumbnail_path):
         return True
     try:
@@ -52,7 +52,7 @@ def create_thumbnail(path, thumbnails_dir, hash_str):
         img.thumbnail((256, 256))
         if img.mode not in ('RGB', 'L'):
             img = img.convert('RGB')
-        img.save(thumbnail_path, "JPEG", quality=85)
+        img.save(thumbnail_path, "WEBP", quality=80, method=6)
         return True
     except Exception:
         return False
