@@ -79,10 +79,8 @@ def process_single_image_for_scan(full_path, drivename, min_size_kb, extensions)
 
         width, height = 0, 0
         try:
-            img_for_hash = Image.open(full_path)
-            width, height = img_for_hash.size
-            perceptual_hash_val = imagehash.dhash(img_for_hash)
-            perceptual_hash_str = str(perceptual_hash_val)
+            with Image.open(full_path) as img:
+                width, height = img.size
         except Exception:
             return None
 
@@ -94,7 +92,7 @@ def process_single_image_for_scan(full_path, drivename, min_size_kb, extensions)
             os.path.basename(full_path),
             file_ext[1:],
             f"{file_size_kb:.2f}",
-            perceptual_hash_str,
+            'N/A',  # PerceptualHash placeholder
             sha256_hex,
             width,
             height,
@@ -107,6 +105,26 @@ def process_single_image_for_scan(full_path, drivename, min_size_kb, extensions)
         ]
     except (IOError, OSError):
         return None
+
+def create_thumbnail_and_phash(input_row, full_path_index, sha256_index, phash_index, thumbnails_dir):
+    """Worker function to create a thumbnail and then generate a perceptual hash from it."""
+    full_path = input_row[full_path_index]
+    sha256_hex = input_row[sha256_index]
+
+    if not create_thumbnail(full_path, thumbnails_dir, sha256_hex):
+        input_row[phash_index] = 'N/A'
+        return input_row
+
+    thumbnail_path = os.path.join(thumbnails_dir, f"{sha256_hex}.jpg")
+    try:
+        with Image.open(thumbnail_path) as thumb_img:
+            perceptual_hash_val = imagehash.dhash(thumb_img)
+            perceptual_hash_str = str(perceptual_hash_val)
+    except Exception:
+        perceptual_hash_str = 'N/A'
+
+    input_row[phash_index] = perceptual_hash_str
+    return input_row
 
 def scan_mode(drivename, root_dir, catalog_file, min_size_kb, extensions):
     """Scans a directory, gathers image metadata, and saves it to a CSV catalog."""
@@ -164,77 +182,94 @@ def scan_mode(drivename, root_dir, catalog_file, min_size_kb, extensions):
                     writer.writerow(row_data)
                     csvfile.flush()
 
-def thumbnail_mode(catalog_file, thumbnails_dir):
-    """Generates thumbnails for all images listed in the catalog file."""
+def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir):
+    """Generates thumbnails and perceptual hashes, creating a new, enriched catalog file."""
     os.makedirs(thumbnails_dir, exist_ok=True)
 
     try:
-        with open(catalog_file, 'r', newline='', encoding='utf-8') as csvfile:
-            reader = csv.reader(csvfile)
+        with open(catalog_file, 'r', newline='', encoding='utf-8') as infile, \
+             open(output_catalog_file, 'w', newline='', encoding='utf-8') as outfile:
+
+            reader = csv.reader(infile)
+            writer = csv.writer(outfile)
+
             header = next(reader)
+            writer.writerow(header)
+
             full_path_index = header.index('FullPath')
             sha256_index = header.index('SHA256')
-            
-            images_to_thumbnail = list(reader)
-            if not images_to_thumbnail:
+            phash_index = header.index('PerceptualHash')
+
+            images_to_process = list(reader)
+            if not images_to_process:
                 print("No images found in the catalog file.")
                 return
 
-            print(f"Found {len(images_to_thumbnail)} images to thumbnail.")
-
-            paths = [row[full_path_index] for row in images_to_thumbnail]
-            hashes = [row[sha256_index] for row in images_to_thumbnail]
+            print(f"Found {len(images_to_process)} images to process.")
 
             with concurrent.futures.ProcessPoolExecutor() as executor:
-                from itertools import repeat
-                results = executor.map(create_thumbnail, paths, repeat(thumbnails_dir), hashes)
+                worker_func = partial(create_thumbnail_and_phash,
+                                      full_path_index=full_path_index,
+                                      sha256_index=sha256_index,
+                                      phash_index=phash_index,
+                                      thumbnails_dir=thumbnails_dir)
 
-                for _ in tqdm(results, total=len(images_to_thumbnail), desc="Generating Thumbnails"):
-                    pass
+                results = executor.map(worker_func, images_to_process)
+
+                for output_row in tqdm(results, total=len(images_to_process), desc="Generating Thumbnails and Hashes"):
+                    writer.writerow(output_row)
 
     except (IOError, StopIteration, ValueError) as e:
         print(f"Error: Could not read catalog file. {e}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Scan for images and generate thumbnails in two steps.")
-    parser.add_argument('--mode', type=str, choices=['scan', 'thumbnail'], default='scan', help='The mode to run in: "scan" to find files and create a catalog, or "thumbnail" to generate thumbnails from a catalog.')
-    parser.add_argument('--catalog-file', type=str, default='catalog.csv', help='Path to the catalog CSV file.')
-    parser.add_argument('--drivename', type=str, help='A name for the drive being scanned (required for "scan" mode).')
-    parser.add_argument('--directory', type=str, help='The root directory to scan (required for "scan" mode).')
-    parser.add_argument('--thumbnails-dir', type=str, help='Directory to store thumbnails (required for "thumbnail" mode).')
-    parser.add_argument('--min-size', type=int, default=100, help='Minimum file size in KB (for "scan" mode).')
-    parser.add_argument('--extensions', type=str, default='jpg,jpeg,png,tiff,tif,psd', help='Comma-separated image extensions to scan.')
+    parser = argparse.ArgumentParser(description="Scan for images and generate thumbnails.")
+    parser.add_argument('--output-dir', type=str, default='output', help='The directory to store all output files.')
+    subparsers = parser.add_subparsers(dest='mode', required=True, help='The mode to run in.')
+
+    # Scan command
+    scan_parser = subparsers.add_parser('scan', help='Scan a directory to find files and create a catalog.')
+    scan_parser.add_argument('identifier', type=str, help='A unique name for this scan, used to generate filenames.')
+    scan_parser.add_argument('--directory', type=str, required=True, help='The root directory to scan.')
+    scan_parser.add_argument('--min-size', type=int, default=100, help='Minimum file size in KB to process.')
+    scan_parser.add_argument('--extensions', type=str, default='jpg,jpeg,png,tiff,tif,psd', help='Comma-separated image extensions to scan.')
+
+    # Thumbnail command
+    thumb_parser = subparsers.add_parser('thumbnail', help='Generate thumbnails and perceptual hashes from a catalog.')
+    thumb_parser.add_argument('identifier', type=str, help='The unique name for the scan, used to find the input catalog.')
 
     args = parser.parse_args()
-    extensions_set = set(args.extensions.lower().split(','))
+
+    # --- Path Generation ---
+    output_dir = args.output_dir
+    thumbnails_dir = os.path.join(output_dir, 'thumbnails')
+    catalog_file = os.path.join(output_dir, f"{args.identifier}.csv")
+    final_catalog_file = os.path.join(output_dir, f"{args.identifier}_final.csv")
+    
+    os.makedirs(thumbnails_dir, exist_ok=True)
+
+    extensions_set = set(args.extensions.lower().split(',')) if 'extensions' in args else set()
 
     if args.mode == 'scan':
-        if not all([args.drivename, args.directory]):
-            parser.error("--drivename and --directory are required for 'scan' mode.")
-        
-        print(f"Starting scan on drive: {args.drivename}")
+        print(f"Starting scan '{args.identifier}'")
         print(f"Scanning directory: {args.directory}")
-        print(f"Allowed extensions: {', '.join(extensions_set)}")
-        print(f"Minimum size: {args.min_size} KB")
-        print(f"Cataloging to: {args.catalog_file}")
+        print(f"Outputting catalog to: {catalog_file}")
 
-        scan_mode(args.drivename, args.directory, args.catalog_file, args.min_size, extensions_set)
+        scan_mode(args.identifier, args.directory, catalog_file, args.min_size, extensions_set)
         
         print("\nScan complete.")
-        print(f"Catalog file created at: {args.catalog_file}")
+        print(f"Catalog file created at: {catalog_file}")
 
     elif args.mode == 'thumbnail':
-        if not args.thumbnails_dir:
-            parser.error("--thumbnails-dir is required for 'thumbnail' mode.")
-
-        print(f"Generating thumbnails from: {args.catalog_file}")
-        print(f"Thumbnails will be saved in: {args.thumbnails_dir}")
+        print(f"Generating thumbnails and hashes for scan '{args.identifier}'")
+        print(f"Reading from: {catalog_file}")
+        print(f"Thumbnails will be saved in: {thumbnails_dir}")
+        print(f"Enriched catalog will be saved to: {final_catalog_file}")
         
-        thumbnail_mode(args.catalog_file, args.thumbnails_dir)
+        thumbnail_mode(catalog_file, final_catalog_file, thumbnails_dir)
         
-        print("\nThumbnail generation complete.")
-        print(f"Thumbnails saved in: {args.thumbnails_dir}")
-
+        print("\nThumbnail and hash generation complete.")
+        print(f"Enriched catalog file created at: {final_catalog_file}")
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()

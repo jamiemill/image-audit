@@ -1,28 +1,48 @@
 # Image Audit
 
-This script provides a two-step process to first catalog images from a drive and then generate thumbnails for them.
+This script provides a multi-step process to scan drives for images, generate metadata and thumbnails, and browse the results.
 
-## Step 1: Scan and Catalog
+## Step 1: Scan a Directory
 
-This step scans a directory for images and creates a `catalog.csv` file with their metadata. You can review and edit this file before generating thumbnails.
+This step scans a directory to find images and record their metadata into a catalog file. This initial scan is optimized for speed by deferring the calculation of perceptual hashes.
 
-    python3 scanner.py --mode scan \
-    --drivename "WD_BLACK_1" \
-    --directory /path/to/your/hard_drive \
-    --catalog-file scanned-media/catalog.csv
+Provide a unique `identifier` for your scan. This will be used to name your output files.
 
-## Step 2: Generate Thumbnails
+    python3 scanner.py scan <your_identifier> --directory /path/to/your/drive
 
-This step reads the `catalog.csv` file and generates thumbnails for all the images listed in it.
+This will create `output/<your_identifier>.csv`.
 
-    python3 scanner.py --mode thumbnail \
-    --catalog-file scanned-media/catalog.csv \
-    --thumbnails-dir scanned-media/thumbnails
+## Step 2: Generate Thumbnails and Hashes
 
-## build for distro
+This step reads the catalog generated in Step 1, creates a thumbnail for each image, calculates a perceptual hash from the thumbnail, and saves the result to a new, final catalog file.
 
-    pyinstaller --onefile scanner.py
+    python3 scanner.py thumbnail <your_identifier>
 
-## browser
+This will read `output/<your_identifier>.csv` and create:
+-   `output/<your_identifier>_final.csv` (the enriched catalog)
+-   Thumbnails inside `output/thumbnails/`
+
+*You can use the optional `--output-dir` flag on either command to change the location of the `output` directory.*
+
+## Step 3: Browse the Results
+
+Before running the browser, you need to tell it which data file to load.
+
+1.  Open `config.json`.
+2.  Make sure the `csv_files` property points to your new, final catalog file.
+
+    ```json
+    {
+      "csv_files": ["output/your_identifier_final.csv"]
+    }
+    ```
+
+Now, you can start the local web server to view the browser interface.
 
     python3 -m http.server
+
+Then open `http://localhost:8000/browser.html` in your web browser.
+
+## Build for Distribution
+
+    pyinstaller --onefile scanner.py
