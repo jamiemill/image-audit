@@ -31,8 +31,8 @@ def get_exif_data(path):
                 'Software': get_tag('Image Software'),
                 'ImageDescription': get_tag('Image ImageDescription'),
                 'Keywords': get_tag('Iptc.Application2.Keywords', get_tag('XMP-dc:Subject')),
-            }
-    except Exception:
+            }, None
+    except Exception as e:
         return {
             'DateTime': 'N/A',
             'Copyright': 'N/A',
@@ -40,7 +40,7 @@ def get_exif_data(path):
             'Software': 'N/A',
             'ImageDescription': 'N/A',
             'Keywords': 'N/A',
-        }
+        }, f"Could not read EXIF data: {e}"
 
 def create_thumbnail(path, thumbnails_dir, hash_str):
     """Creates a high-quality, aspect-ratio-preserved thumbnail, skipping if it already exists."""
@@ -49,7 +49,7 @@ def create_thumbnail(path, thumbnails_dir, hash_str):
         return True
     try:
         img = Image.open(path)
-        img.thumbnail((512, 512))
+        img.thumbnail((256, 256))
         if img.mode not in ('RGB', 'L'):
             img = img.convert('RGB')
         img.save(thumbnail_path, "JPEG", quality=85)
@@ -60,16 +60,19 @@ def create_thumbnail(path, thumbnails_dir, hash_str):
 def process_single_image_for_scan(full_path, identifier, min_size_kb, extensions):
     """
     Worker function to process a single image file for the scan mode.
-    Returns a data row for the CSV on success, or None on failure/skip.
+    Returns a tuple of (data row, list of errors).
+    Data row is for the CSV on success, or None on failure/skip.
+    List of errors is a list of (path, error_message) tuples.
     """
+    errors = []
     try:
         file_ext = os.path.splitext(full_path)[1].lower()
         if not file_ext or file_ext[1:] not in extensions:
-            return None
+            return None, []
 
         file_size_kb = os.path.getsize(full_path) / 1024
         if file_size_kb < min_size_kb:
-            return None
+            return None, []
 
         sha256_hash = hashlib.sha256()
         with open(full_path, 'rb') as f:
@@ -81,10 +84,13 @@ def process_single_image_for_scan(full_path, identifier, min_size_kb, extensions
         try:
             with Image.open(full_path) as img:
                 width, height = img.size
-        except Exception:
-            return None
+        except Exception as e:
+            errors.append((full_path, f"File format not recognized or image is corrupt: {e}"))
+            return None, errors
 
-        exif_data = get_exif_data(full_path)
+        exif_data, exif_error = get_exif_data(full_path)
+        if exif_error:
+            errors.append((full_path, exif_error))
 
         return [
             identifier,
@@ -102,9 +108,10 @@ def process_single_image_for_scan(full_path, identifier, min_size_kb, extensions
             exif_data['Software'],
             exif_data['ImageDescription'],
             exif_data['Keywords'],
-        ]
-    except (IOError, OSError):
-        return None
+        ], errors
+    except (IOError, OSError) as e:
+        errors.append((full_path, f"IO/OS Error: {e}"))
+        return None, errors
 
 def create_thumbnail_and_phash(input_row, full_path_index, sha256_index, phash_index, thumbnails_dir):
     """Worker function to create a thumbnail and then generate a perceptual hash from it."""
@@ -148,7 +155,7 @@ def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions):
     for dirpath, _, filenames in os.walk(root_dir):
         for filename in filenames:
             all_files_in_dir.append(os.path.join(dirpath, filename))
-    
+
     files_to_process = [p for p in all_files_in_dir if p not in processed_paths]
 
     if not files_to_process:
@@ -157,9 +164,15 @@ def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions):
 
     print(f"Total files to process: {len(files_to_process)}")
 
-    with open(catalog_file, 'a', newline='', encoding='utf-8') as csvfile:
+    output_dir = os.path.dirname(catalog_file)
+    error_log_file = os.path.join(output_dir, f"{identifier}_errors.csv")
+    is_new_error_file = not os.path.exists(error_log_file) or os.path.getsize(error_log_file) == 0
+
+    with open(catalog_file, 'a', newline='', encoding='utf-8') as csvfile, \
+         open(error_log_file, 'a', newline='', encoding='utf-8') as errorfile:
         writer = csv.writer(csvfile)
-        
+        error_writer = csv.writer(errorfile)
+
         if is_new_file:
             header = [
                 'Identifier', 'FullPath', 'FileName', 'FileType', 'FileSizeKB', 'PerceptualHash', 'SHA256',
@@ -169,18 +182,26 @@ def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions):
             writer.writerow(header)
             csvfile.flush()
 
+        if is_new_error_file:
+            error_writer.writerow(['FullPath', 'Error'])
+            errorfile.flush()
+
         with concurrent.futures.ProcessPoolExecutor() as executor:
             worker_func = partial(process_single_image_for_scan,
                                   identifier=identifier,
                                   min_size_kb=min_size_kb,
                                   extensions=extensions)
-            
+
             results = executor.map(worker_func, files_to_process)
-            
-            for row_data in tqdm(results, total=len(files_to_process), desc="Scanning New Images"):
+
+            for row_data, errors in tqdm(results, total=len(files_to_process), desc="Scanning New Images"):
                 if row_data:
                     writer.writerow(row_data)
                     csvfile.flush()
+                if errors:
+                    for path, error_msg in errors:
+                        error_writer.writerow([path, error_msg])
+                    errorfile.flush()
 
 def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir):
     """Generates thumbnails and perceptual hashes, creating a new, enriched catalog file."""
