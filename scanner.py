@@ -75,18 +75,19 @@ def process_single_image_for_scan(full_path, identifier, min_size_kb, extensions
             return None, []
 
         sha256_hash = hashlib.sha256()
+        width, height = 0, 0
         with open(full_path, 'rb') as f:
+            try:
+                with Image.open(f) as img:
+                    width, height = img.size
+            except Exception as e:
+                errors.append((full_path, f"File format not recognized or image is corrupt: {e}"))
+                return None, errors
+
+            f.seek(0)
             for byte_block in iter(lambda: f.read(4096), b''):
                 sha256_hash.update(byte_block)
-        sha256_hex = sha256_hash.hexdigest()
-
-        width, height = 0, 0
-        try:
-            with Image.open(full_path) as img:
-                width, height = img.size
-        except Exception as e:
-            errors.append((full_path, f"File format not recognized or image is corrupt: {e}"))
-            return None, errors
+            sha256_hex = sha256_hash.hexdigest()
 
         exif_data, exif_error = get_exif_data(full_path)
         if exif_error:
@@ -122,7 +123,7 @@ def create_thumbnail_and_phash(input_row, full_path_index, sha256_index, phash_i
         input_row[phash_index] = 'N/A'
         return input_row
 
-    thumbnail_path = os.path.join(thumbnails_dir, f"{sha256_hex}.jpg")
+    thumbnail_path = os.path.join(thumbnails_dir, f"{sha256_hex}.webp")
     try:
         with Image.open(thumbnail_path) as thumb_img:
             perceptual_hash_val = imagehash.dhash(thumb_img)
@@ -133,7 +134,7 @@ def create_thumbnail_and_phash(input_row, full_path_index, sha256_index, phash_i
     input_row[phash_index] = perceptual_hash_str
     return input_row
 
-def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions):
+def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions, max_workers):
     """Scans a directory, gathers image metadata, and saves it to a CSV catalog."""
     processed_paths = set()
     is_new_file = not os.path.exists(catalog_file) or os.path.getsize(catalog_file) == 0
@@ -186,7 +187,7 @@ def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions):
             error_writer.writerow(['FullPath', 'Error'])
             errorfile.flush()
 
-        with concurrent.futures.ProcessPoolExecutor() as executor:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
             worker_func = partial(process_single_image_for_scan,
                                   identifier=identifier,
                                   min_size_kb=min_size_kb,
@@ -203,7 +204,7 @@ def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions):
                         error_writer.writerow([path, error_msg])
                     errorfile.flush()
 
-def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir):
+def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir, max_workers):
     """Generates thumbnails and perceptual hashes, creating a new, enriched catalog file."""
     os.makedirs(thumbnails_dir, exist_ok=True)
 
@@ -228,7 +229,7 @@ def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir):
 
             print(f"Found {len(images_to_process)} images to process.")
 
-            with concurrent.futures.ProcessPoolExecutor() as executor:
+            with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
                 worker_func = partial(create_thumbnail_and_phash,
                                       full_path_index=full_path_index,
                                       sha256_index=sha256_index,
@@ -246,6 +247,7 @@ def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir):
 def main():
     parser = argparse.ArgumentParser(description="Scan for images and generate thumbnails.")
     parser.add_argument('--output-dir', type=str, default='output', help='The directory to store all output files.')
+    parser.add_argument('--max-workers', type=int, default=None, help='Maximum number of worker processes to use. Defaults to the number of CPU cores.')
     subparsers = parser.add_subparsers(dest='mode', required=True, help='The mode to run in.')
 
     # Scan command
@@ -276,7 +278,7 @@ def main():
         print(f"Scanning directory: {args.directory}")
         print(f"Outputting catalog to: {catalog_file}")
 
-        scan_mode(args.identifier, args.directory, catalog_file, args.min_size, extensions_set)
+        scan_mode(args.identifier, args.directory, catalog_file, args.min_size, extensions_set, args.max_workers)
         
         print("\nScan complete.")
         print(f"Catalog file created at: {catalog_file}")
@@ -287,7 +289,7 @@ def main():
         print(f"Thumbnails will be saved in: {thumbnails_dir}")
         print(f"Enriched catalog will be saved to: {final_catalog_file}")
         
-        thumbnail_mode(catalog_file, final_catalog_file, thumbnails_dir)
+        thumbnail_mode(catalog_file, final_catalog_file, thumbnails_dir, args.max_workers)
         
         print("\nThumbnail and hash generation complete.")
         print(f"Enriched catalog file created at: {final_catalog_file}")
