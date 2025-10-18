@@ -247,7 +247,6 @@ def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir, max_worker
 def main():
     parser = argparse.ArgumentParser(description="Scan for images and generate thumbnails.")
     parser.add_argument('--output-dir', type=str, default='output', help='The directory to store all output files.')
-    parser.add_argument('--max-workers', type=int, default=None, help='Maximum number of worker processes to use. Defaults to the number of CPU cores.')
     subparsers = parser.add_subparsers(dest='mode', required=True, help='The mode to run in.')
 
     # Scan command
@@ -256,10 +255,12 @@ def main():
     scan_parser.add_argument('--directory', type=str, required=True, help='The root directory to scan.')
     scan_parser.add_argument('--min-size', type=int, default=100, help='Minimum file size in KB to process.')
     scan_parser.add_argument('--extensions', type=str, default='jpg,jpeg,png,tiff,tif,psd', help='Comma-separated image extensions to scan.')
+    scan_parser.add_argument('--max-workers', type=int, default=None, help='Maximum number of worker processes to use. Defaults to the number of CPU cores.')
 
     # Thumbnail command
     thumb_parser = subparsers.add_parser('thumbnail', help='Generate thumbnails and perceptual hashes from a catalog.')
     thumb_parser.add_argument('identifier', type=str, help='The unique name for the scan, used to find the input catalog.')
+    thumb_parser.add_argument('--max-workers', type=int, default=None, help='Maximum number of worker processes to use. Defaults to the number of CPU cores.')
 
     args = parser.parse_args()
 
