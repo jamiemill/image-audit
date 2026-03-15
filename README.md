@@ -82,13 +82,13 @@ Reads the scan catalog, deduplicates files, creates thumbnails, computes percept
     python3 scanner.py thumbnail <identifier>
     python3 scanner.py thumbnail <identifier> --hdd   # for spinning drives
 
-**How it works — two phases:**
+**How it works — three phases:**
 
 **Phase 1 — Quick dedup check.** Reads only the first 64KB of every file and hashes that together with the file size. This is enough to reliably identify duplicates (the first 64KB of a photo contains the full EXIF header — capture time, GPS, camera model — and the start of compressed image data; two different photos will essentially never match). Crucially, this costs the same for all file sizes: a 500MB TIFF and a 5MB JPEG both require one seek plus a tiny read. Files with matching quick-hashes are flagged as duplicates and excluded from phase 2.
 
-**Phase 2 — Process unique files only.** For each file that passed the dedup check: streams the full file to compute SHA256, decodes the image with PIL to create a 256×256 thumbnail, and computes a perceptual hash from the thumbnail. Duplicate files never reach this phase — their SHA256 and perceptual hash are simply copied from whichever copy was processed.
+**Phase 2 — Process unique files only.** For each file that passed the dedup check: streams the full file to compute SHA256, decodes the image with PIL to create a 256×256 thumbnail, and computes a perceptual hash from the thumbnail. Duplicate files never reach this phase — their SHA256 and perceptual hash are simply copied from whichever copy was processed. This means the expensive work (full file reads, PIL decode) only happens once per unique image, regardless of how many copies exist on the drive.
 
-This means the expensive work (full file reads, PIL decode) only happens once per unique image, regardless of how many copies exist on the drive.
+**Phase 3 — Write duplicate entries.** Writes a catalog row for every duplicate file, copying the SHA256 and perceptual hash from the canonical file processed in phase 2. This ensures every file on the drive has an entry in the final catalog, even if its thumbnail was not created separately.
 
 Before phase 2 starts, the script prints a disk space estimate and warns if space looks tight. Add `--yes` to skip this prompt for unattended runs.
 

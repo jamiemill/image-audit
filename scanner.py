@@ -25,8 +25,9 @@ warnings.filterwarnings('ignore', category=UserWarning, module='PIL')
 # Pillow has a limit to prevent decompression bombs. Set it to a large but sane value.
 Image.MAX_IMAGE_PIXELS = 500000000
 
-QUICK_HASH_BYTES = 65536   # 64KB read for fast duplicate detection
-HASH_CHUNK_SIZE  = 65536   # 64KB chunks for streaming SHA256 (lower syscall overhead than 4KB)
+QUICK_HASH_BYTES  = 65536         # 64KB read for fast duplicate detection
+HASH_CHUNK_SIZE   = 65536         # 64KB chunks for streaming SHA256
+SINGLE_READ_LIMIT = 50_000_000   # Files under 50 MB are loaded into memory once for both SHA256 and PIL
 
 EXCLUSIONS_TEMPLATE = """\
 # Exclusion patterns for scanner.py — one per line, # to comment.
@@ -124,10 +125,10 @@ def create_thumbnail(path, thumbnails_dir, sha256_hex):
         return True
     try:
         with Image.open(path) as img:
-            img.thumbnail((256, 256))
+            img.thumbnail((256, 256), Image.Resampling.BILINEAR)
             if img.mode not in ('RGB', 'L'):
                 img = img.convert('RGB')
-            img.save(thumbnail_path, "WEBP", quality=80, method=6)
+            img.save(thumbnail_path, "WEBP", quality=80, method=1)
         return True
     except Exception:
         return False
@@ -209,12 +210,24 @@ def process_unique_image(input_row, full_path_index, sha256_index, phash_index, 
     full_path = input_row[full_path_index]
     output_row = list(input_row)
 
-    sha256_hash = hashlib.sha256()
     try:
-        with open(full_path, 'rb') as f:
-            for chunk in iter(lambda: f.read(HASH_CHUNK_SIZE), b''):
-                sha256_hash.update(chunk)
-        sha256_hex = sha256_hash.hexdigest()
+        file_size = os.path.getsize(full_path)
+        if file_size <= SINGLE_READ_LIMIT:
+            # Small file: read once into memory, use for both SHA256 and PIL.
+            # Avoids the second disk read that would otherwise be needed for PIL.
+            with open(full_path, 'rb') as f:
+                file_bytes = f.read()
+            sha256_hex = hashlib.sha256(file_bytes).hexdigest()
+            pil_source = __import__('io').BytesIO(file_bytes)
+        else:
+            # Large file (TIFFs, PSDs): stream for SHA256, then PIL re-opens from path.
+            # The first read fills the OS page cache so the PIL re-open is typically free.
+            sha256_hash = hashlib.sha256()
+            with open(full_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(HASH_CHUNK_SIZE), b''):
+                    sha256_hash.update(chunk)
+            sha256_hex = sha256_hash.hexdigest()
+            pil_source = full_path
     except (IOError, OSError):
         output_row[sha256_index] = 'N/A'
         output_row[phash_index] = 'N/A'
@@ -225,7 +238,7 @@ def process_unique_image(input_row, full_path_index, sha256_index, phash_index, 
 
     # Memory-first check (prior runs), then disk fallback (same-run SHA256 collisions)
     if sha256_hex not in existing_thumbnails and not os.path.exists(thumbnail_path):
-        if not create_thumbnail(full_path, thumbnails_dir, sha256_hex):
+        if not create_thumbnail(pil_source, thumbnails_dir, sha256_hex):
             output_row[phash_index] = 'N/A'
             return output_row
 
@@ -415,7 +428,7 @@ def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir, max_worker
     print(f"\nSpace estimate:")
     print(f"  Unique files to process:    {len(unique_rows):,}")
     print(f"  Existing thumbnails:        {len(existing_thumbnails):,}  (reused from prior runs)")
-    print(f"  New thumbnails (est max):   ~{est_new:,}  (~{est_storage_gb:.1f} GB at ~{THUMB_KB_ESTIMATE} KB each)")
+    print(f"  New thumbnails (est max):   ~{est_new:,}  ({_format_size(est_storage_gb)} at ~{THUMB_KB_ESTIMATE} KB each)")
     try:
         free_gb = shutil.disk_usage(thumbnails_dir).free / (1024 ** 3)
         if est_storage_gb > free_gb * 0.85:
@@ -470,6 +483,12 @@ def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir, max_worker
                     out[phash_index]  = canonical[phash_index]
                 writer.writerow(out)
             outfile.flush()
+
+
+def _format_size(size_gb):
+    if size_gb < 1:
+        return f"~{size_gb * 1024:.0f} MB"
+    return f"~{size_gb:.1f} GB"
 
 
 def _format_duration(minutes):
@@ -570,7 +589,7 @@ def estimate_mode(root_dir, min_size_kb, extensions, exclusion_patterns=None):
     print(f"    Data to read (unique only): {unique_total_gb:>9.1f} GB")
     print(f"{'=' * 54}")
     print(f"  Thumbnail storage estimate:")
-    print(f"    ~{unique_sizes:,} thumbnails × ~{THUMB_KB_ESTIMATE} KB  =  ~{est_thumb_gb:.1f} GB")
+    print(f"    ~{unique_sizes:,} thumbnails × ~{THUMB_KB_ESTIMATE} KB  =  {_format_size(est_thumb_gb)}")
     try:
         free_gb = shutil.disk_usage('.').free / (1024 ** 3)
         marker  = "✓" if free_gb > est_thumb_gb * 1.5 else "⚠  may be tight"
