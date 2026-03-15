@@ -256,18 +256,30 @@ def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions, max_w
             print(f"Warning: could not read existing catalog, starting fresh. ({e})")
             is_new_file = True
 
+
     print("Walking directory tree...")
     all_files = []
     for dirpath, dirnames, filenames in os.walk(root_dir):
         # Prune excluded directories in-place — os.walk will not descend into them.
-        # This is much faster than descending and filtering afterwards.
         if exclusion_patterns:
             dirnames[:] = [d for d in dirnames
                            if not is_excluded(os.path.join(dirpath, d), exclusion_patterns)]
         for filename in filenames:
             full_path = os.path.join(dirpath, filename)
-            if not exclusion_patterns or not is_excluded(full_path, exclusion_patterns):
-                all_files.append(full_path)
+            if exclusion_patterns and is_excluded(full_path, exclusion_patterns):
+                continue
+            # Pre-filter by extension and size here, not in the worker.
+            # Files that fail these checks would otherwise never land in the catalog
+            # or error log, making them invisible to resume and retried on every run.
+            file_ext = os.path.splitext(filename)[1].lower()
+            if not file_ext or file_ext[1:] not in extensions:
+                continue
+            try:
+                if os.path.getsize(full_path) / 1024 < min_size_kb:
+                    continue
+            except OSError:
+                continue
+            all_files.append(full_path)
 
     files_to_process = [p for p in all_files if p not in processed_paths]
     if not files_to_process:
@@ -569,13 +581,12 @@ def estimate_mode(root_dir, min_size_kb, extensions, exclusion_patterns=None):
 
     # Time estimates for a spinning drive, single worker (--hdd).
     #
-    # Scan: header reads only. Seek-dominated: ~30–100 files/sec.
-    scan_fast = total / 100
-    scan_slow  = total / 30
-    #
-    # Thumbnail phase 1 (quick-hash): 64 KB/file regardless of actual file size.
-    # A 500 MB TIFF costs the same as a 5 MB JPEG here. Seek-dominated: ~50–100 files/sec.
-    qhash_fast = total / 100
+    # Both scan and quick-hash are seek-dominated (~10ms/file on HDD, read time negligible).
+    # Scan reads PIL header + exifread (~10–50 KB); quick-hash reads 64 KB — essentially equal.
+    # Same range used for both: ~50–120 files/sec.
+    scan_fast  = total / 120
+    scan_slow  = total / 50
+    qhash_fast = total / 120
     qhash_slow = total / 50
     #
     # Thumbnail phase 2: unique files only.
