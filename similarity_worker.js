@@ -1,74 +1,66 @@
 /**
- * Web Worker for calculating image similarities in the background.
+ * Web Worker for calculating per-page image similarities.
+ * Uses fast 32-bit integer hamming distance instead of BigInt.
+ *
+ * Protocol:
+ *   1. { type: 'init', allHashPairs: [[fullPath, hiUint32, loUint32], ...] }
+ *      Sent once after data loads. Worker stores hash pairs in memory.
+ *
+ *   2. { type: 'compute', pageRows: [{FullPath, PerceptualHash}], similarityThreshold }
+ *      Sent on each page render. Worker returns results for just these rows.
+ *      Response: [[fullPath, [{path, distance}, ...]], ...]
  */
 
-// --- Calculation Functions (copied from main script) ---
+let storedHashPairs = null;
 
-function hammingDistance(hex1, hex2) {
-    if (!hex1 || !hex2 || hex1.length !== hex2.length) return Infinity;
-    const bigInt1 = BigInt(`0x${hex1}`);
-    const bigInt2 = BigInt(`0x${hex2}`);
-    let xorResult = bigInt1 ^ bigInt2;
-    let distance = 0;
-    while (xorResult > 0) {
-        distance += Number(xorResult & 1n);
-        xorResult >>= 1n;
-    }
-    return distance;
+function popcount32(n) {
+    n = n >>> 0;
+    n -= (n >>> 1) & 0x55555555;
+    n = (n & 0x33333333) + ((n >>> 2) & 0x33333333);
+    n = (n + (n >>> 4)) & 0x0f0f0f0f;
+    return (n * 0x01010101) >>> 24;
 }
 
-function calculateAllSimilarities(data, similarityThreshold) {
-    const simMap = new Map();
-    data.forEach(item => simMap.set(item.FullPath, []));
-
-    const hashIndex = data.reduce((acc, item) => {
-        if (item.PerceptualHash) {
-            if (!acc[item.PerceptualHash]) acc[item.PerceptualHash] = [];
-            acc[item.PerceptualHash].push(item);
+function computeSimilarities(pageRows, allHashPairs, threshold) {
+    const results = [];
+    for (const row of pageRows) {
+        if (!row.PerceptualHash || row.PerceptualHash.length < 16) {
+            results.push([row.FullPath, []]);
+            continue;
         }
-        return acc;
-    }, {});
+        const hiA = parseInt(row.PerceptualHash.slice(0, 8), 16) >>> 0;
+        const loA = parseInt(row.PerceptualHash.slice(8, 16), 16) >>> 0;
 
-    const uniqueHashes = Object.keys(hashIndex);
-
-    for (let i = 0; i < uniqueHashes.length; i++) {
-        for (let j = i; j < uniqueHashes.length; j++) {
-            const hashA = uniqueHashes[i];
-            const hashB = uniqueHashes[j];
-            const distance = hammingDistance(hashA, hashB);
-
-            if (distance <= similarityThreshold) {
-                const itemsA = hashIndex[hashA];
-                const itemsB = hashIndex[hashB];
-                itemsA.forEach(itemA => {
-                    itemsB.forEach(itemB => {
-                        if (itemA.FullPath !== itemB.FullPath) {
-                            simMap.get(itemA.FullPath).push({ ...itemB, distance });
-                            simMap.get(itemB.FullPath).push({ ...itemA, distance });
-                        }
-                    });
-                });
+        const similar = [];
+        for (const pair of allHashPairs) {
+            if (pair[0] === row.FullPath) continue;
+            const d = popcount32(hiA ^ pair[1]) + popcount32(loA ^ pair[2]);
+            if (d <= threshold) {
+                similar.push({ path: pair[0], distance: d });
             }
         }
+        similar.sort((a, b) => a.distance - b.distance);
+        results.push([row.FullPath, similar]);
     }
-
-    for (const key of simMap.keys()) {
-        const similarItems = simMap.get(key);
-        const uniqueSimilarItems = Array.from(new Map(similarItems.map(item => [item.FullPath, item])).values());
-        uniqueSimilarItems.sort((a, b) => a.distance - b.distance);
-        simMap.set(key, uniqueSimilarItems);
-    }
-    return simMap;
+    return results;
 }
 
-// --- Worker Message Handling ---
-
 self.onmessage = function(event) {
-    console.log("Worker: Received data. Starting similarity calculation.");
-    const { data, similarityThreshold } = event.data;
-    const similarityMap = calculateAllSimilarities(data, similarityThreshold);
-    console.log("Worker: Calculation complete. Sending results back.");
-    // Convert Map to array of pairs for sending, as Map object itself might not be structured-clonable in all contexts.
-    const a = Array.from(similarityMap.entries());
-    self.postMessage(a);
+    const { type } = event.data;
+
+    if (type === 'init') {
+        storedHashPairs = event.data.allHashPairs;
+        console.log(`Worker: Initialized with ${storedHashPairs.length} hash pairs.`);
+        return;
+    }
+
+    if (type === 'compute') {
+        const { pageRows, similarityThreshold } = event.data;
+        if (!storedHashPairs) {
+            self.postMessage([]);
+            return;
+        }
+        const results = computeSimilarities(pageRows, storedHashPairs, similarityThreshold);
+        self.postMessage(results);
+    }
 };

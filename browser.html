@@ -262,11 +262,6 @@
         <input type="number" id="height-lt-filter" placeholder="<" />
       </div>
       <div class="filter-group range-group">
-        <label>Similar:</label
-        ><input type="number" id="similar-gt-filter" placeholder=">" />
-        <input type="number" id="similar-lt-filter" placeholder="<" />
-      </div>
-      <div class="filter-group range-group">
         <label>Duplicates:</label
         ><input type="number" id="dupe-gt-filter" placeholder=">" />
         <input type="number" id="dupe-lt-filter" placeholder="<" />
@@ -310,6 +305,9 @@
       let duplicatesMap = new Map();
       let tableHeaders = [];
       let currentPage = 1;
+      let allHashPairs = [];
+      let fullPathIndex = new Map();
+      let similarityWorker = null;
 
       document.addEventListener("DOMContentLoaded", main);
 
@@ -322,44 +320,74 @@
           const config = await configResponse.json();
 
           statusEl.textContent = `Fetching and parsing ${config.csv_files.length} CSV file(s)...`;
-          const csvPromises = config.csv_files.map((path) =>
-            fetch(path).then((res) => res.text())
-          );
-          const csvContents = await Promise.all(csvPromises);
+
+          function parseCSVStreaming(url) {
+            return new Promise((resolve, reject) => {
+              let rows = [];
+              let fields = null;
+              Papa.parse(url, {
+                download: true,
+                header: true,
+                skipEmptyLines: true,
+                chunk: (results) => {
+                  if (!fields && results.meta.fields)
+                    fields = results.meta.fields;
+                  rows = rows.concat(results.data);
+                },
+                complete: () => resolve({ data: rows, fields }),
+                error: reject,
+              });
+            });
+          }
 
           let allData = [];
           let headers = [];
-          csvContents.forEach((csvText, index) => {
-            if (!csvText) return;
-            const parsed = Papa.parse(csvText, {
-              header: true,
-              skipEmptyLines: true,
-            });
-            if (index === 0) headers = parsed.meta.fields;
-            allData.push(...parsed.data);
-          });
+          const cacheBust = `?t=${Date.now()}`;
+          for (let i = 0; i < config.csv_files.length; i++) {
+            const { data, fields } = await parseCSVStreaming(config.csv_files[i] + cacheBust);
+            if (i === 0) headers = fields || [];
+            allData = allData.concat(data);
+          }
           fullDataset = allData;
           filteredDataset = fullDataset;
           tableHeaders = headers;
 
           duplicatesMap = calculateDuplicates(fullDataset);
+          fullPathIndex = new Map(fullDataset.map((r) => [r.FullPath, r]));
+          allHashPairs = fullDataset
+            .filter(
+              (r) =>
+                r.PerceptualHash &&
+                r.PerceptualHash !== "N/A" &&
+                r.PerceptualHash.length === 16
+            )
+            .map((r) => [
+              r.FullPath,
+              (parseInt(r.PerceptualHash.slice(0, 8), 16)) >>> 0,
+              (parseInt(r.PerceptualHash.slice(8, 16), 16)) >>> 0,
+            ]);
+
+          similarityWorker = new Worker("similarity_worker.js");
+          similarityWorker.postMessage({ type: "init", allHashPairs });
+          similarityWorker.onmessage = (event) => {
+            for (const [path, similars] of event.data) {
+              similarityMap.set(
+                path,
+                similars
+                  .map(({ path: p, distance }) => {
+                    const row = fullPathIndex.get(p);
+                    return row ? { ...row, distance } : null;
+                  })
+                  .filter(Boolean)
+              );
+            }
+            updateSimilarityCells();
+          };
+
           populateFilterControls(fullDataset);
           setupEventListeners();
           renderUI();
-
-          statusEl.textContent =
-            "Calculating similarities in the background... (UI is responsive)";
-          const similarityWorker = new Worker("similarity_worker.js");
-          similarityWorker.postMessage({
-            data: fullDataset,
-            similarityThreshold: SIMILARITY_THRESHOLD,
-          });
-          similarityWorker.onmessage = (event) => {
-            similarityMap = new Map(event.data);
-            console.log("Similarity map received from worker.");
-            statusEl.textContent = `Loaded and analyzed ${fullDataset.length} images from ${config.csv_files.length} source(s).`;
-            renderUI();
-          };
+          statusEl.textContent = `Loaded ${fullDataset.length.toLocaleString()} images from ${config.csv_files.length} source(s).`;
         } catch (error) {
           console.error("Error loading data:", error);
           statusEl.textContent = `Error: ${error.message}.`;
@@ -420,17 +448,10 @@
           widthLt: parseInt(document.getElementById("width-lt-filter").value),
           heightGt: parseInt(document.getElementById("height-gt-filter").value),
           heightLt: parseInt(document.getElementById("height-lt-filter").value),
-          similarGt: parseInt(
-            document.getElementById("similar-gt-filter").value
-          ),
-          similarLt: parseInt(
-            document.getElementById("similar-lt-filter").value
-          ),
           dupeGt: parseInt(document.getElementById("dupe-gt-filter").value),
           dupeLt: parseInt(document.getElementById("dupe-lt-filter").value),
         };
         filteredDataset = fullDataset.filter((row) => {
-          const similarCount = similarityMap.get(row.FullPath)?.length || 0;
           const dupeCount = (duplicatesMap.get(row.SHA256)?.length || 1) - 1;
           if (filters.drive && row.Identifier !== filters.drive) return false;
           if (filters.type && row.FileType !== filters.type) return false;
@@ -467,10 +488,6 @@
             !isNaN(filters.heightLt) &&
             parseInt(row.Height) >= filters.heightLt
           )
-            return false;
-          if (!isNaN(filters.similarGt) && similarCount <= filters.similarGt)
-            return false;
-          if (!isNaN(filters.similarLt) && similarCount >= filters.similarLt)
             return false;
           if (!isNaN(filters.dupeGt) && dupeCount <= filters.dupeGt)
             return false;
@@ -537,7 +554,10 @@
               similarCount > 0
                 ? `<a href="#" class="clickable-link similar-link" data-path="${row.FullPath}">${similarCount}</a>`
                 : "0";
-            const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.SHA256}.webp" alt="thumbnail" loading="lazy"></td>`;
+            const thumbnailCell =
+              row.SHA256 && row.SHA256 !== "N/A"
+                ? `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.SHA256}.webp" alt="thumbnail" loading="lazy"></td>`
+                : `<td class="thumbnail-cell"></td>`;
             const dataCells = filteredHeaders
               .map((header) => {
                 let cellValue;
@@ -579,6 +599,33 @@
           })
           .join("");
         tableBody.innerHTML = rowsHtml;
+
+        if (similarityWorker) {
+          const pageHashes = pageData.map((r) => ({
+            FullPath: r.FullPath,
+            PerceptualHash: r.PerceptualHash || "",
+          }));
+          similarityWorker.postMessage({
+            type: "compute",
+            pageRows: pageHashes,
+            similarityThreshold: SIMILARITY_THRESHOLD,
+          });
+        }
+      }
+
+      function updateSimilarityCells() {
+        document.querySelectorAll("#main-table-body tr").forEach((tr) => {
+          const path = tr.dataset.rowPath;
+          if (!path) return;
+          const simItems = similarityMap.get(path);
+          if (simItems === undefined) return;
+          const simCount = simItems.length;
+          const lastCell = tr.lastElementChild;
+          lastCell.innerHTML =
+            simCount > 0
+              ? `<a href="#" class="clickable-link similar-link" data-path="${path}">${simCount}</a>`
+              : "0";
+        });
       }
 
       function renderPagination() {
@@ -607,8 +654,12 @@
       }
 
       function renderSourceImageDetails(container, sourceImage) {
+        const thumbHtml =
+          sourceImage.SHA256 && sourceImage.SHA256 !== "N/A"
+            ? `<img src="${THUMBNAILS_DIR}/${sourceImage.SHA256}.webp" alt="Source thumbnail">`
+            : "";
         container.innerHTML = `
-                <img src="${THUMBNAILS_DIR}/${sourceImage.SHA256}.webp" alt="Source thumbnail">
+                ${thumbHtml}
                 <div>
                     <ul>
                         <li><strong>File:</strong> ${sourceImage.FileName}</li>
@@ -662,7 +713,10 @@
           .join("")}${distanceHeader}</tr></thead><tbody>`;
         table += list
           .map((row) => {
-            const thumbnailCell = `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.SHA256}.webp" alt="thumbnail" loading="lazy"></td>`;
+            const thumbnailCell =
+              row.SHA256 && row.SHA256 !== "N/A"
+                ? `<td class="thumbnail-cell"><img src="${THUMBNAILS_DIR}/${row.SHA256}.webp" alt="thumbnail" loading="lazy"></td>`
+                : `<td class="thumbnail-cell"></td>`;
             const dataCells = filteredHeaders
               .map((header) => {
                 let cellValue;
