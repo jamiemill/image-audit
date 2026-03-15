@@ -1,8 +1,12 @@
 import os
 import argparse
 import csv
-from datetime import datetime
-from PIL import Image, ExifTags
+import shutil
+import fnmatch
+import logging
+import warnings
+from collections import defaultdict
+from PIL import Image
 import imagehash
 import exifread
 from tqdm import tqdm
@@ -11,58 +15,129 @@ from functools import partial
 import multiprocessing
 import hashlib
 
+# Suppress exifread's verbose stderr logging (e.g. "no EXIF data found in PNG").
+logging.getLogger('exifread').setLevel(logging.CRITICAL)
+
+# Suppress PIL UserWarnings (e.g. "Corrupt EXIF data", "Truncated file").
+# Real failures surface as exceptions and are caught + logged to the error CSV.
+warnings.filterwarnings('ignore', category=UserWarning, module='PIL')
+
 # Pillow has a limit to prevent decompression bombs. Set it to a large but sane value.
 Image.MAX_IMAGE_PIXELS = 500000000
 
-def get_exif_data(path):
-    """Extracts a curated list of useful, identifying metadata from an image file."""
+QUICK_HASH_BYTES = 65536   # 64KB read for fast duplicate detection
+HASH_CHUNK_SIZE  = 65536   # 64KB chunks for streaming SHA256 (lower syscall overhead than 4KB)
+
+EXCLUSIONS_TEMPLATE = """\
+# Exclusion patterns for scanner.py — one per line, # to comment.
+#
+# Patterns without a slash are matched against each directory name in the path.
+#   iPhoto Library          <- excludes any folder named exactly this
+#   *.photoslibrary         <- excludes any folder matching this glob
+#
+# Patterns with a slash are matched against the full path.
+#   /Volumes/MyDrive/Old Backups/2003
+#
+# Common patterns (remove the leading # to enable):
+# iPhoto Library
+# *.photoslibrary
+# .Spotlight-V100
+# .Trashes
+# .fseventsd
+# System Volume Information
+# $RECYCLE.BIN
+# Thumbs.db
+"""
+
+
+def load_exclusions(exclusions_file):
+    """Load exclusion patterns from file. Returns empty list if file doesn't exist."""
+    if not os.path.exists(exclusions_file):
+        return []
+    patterns = []
+    with open(exclusions_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                patterns.append(line)
+    if patterns:
+        print(f"Loaded {len(patterns)} exclusion pattern(s) from {exclusions_file}")
+    return patterns
+
+
+def create_exclusions_template(exclusions_file):
+    """Write a template exclusions file if one does not already exist."""
+    if not os.path.exists(exclusions_file):
+        with open(exclusions_file, 'w', encoding='utf-8') as f:
+            f.write(EXCLUSIONS_TEMPLATE)
+        print(f"Created exclusions template: {exclusions_file}  (edit to exclude directories)")
+
+
+def is_excluded(path, patterns):
+    """
+    Returns True if path matches any exclusion pattern.
+    Patterns without slashes are matched against each path component.
+    Patterns with slashes are matched against the full normalised path.
+    """
+    if not patterns:
+        return False
+    norm = path.replace(os.sep, '/')
+    parts = [p for p in norm.split('/') if p]
+    for pattern in patterns:
+        pnorm = pattern.replace(os.sep, '/')
+        if '/' in pnorm:
+            if fnmatch.fnmatch(norm, pnorm):
+                return True
+        else:
+            for part in parts:
+                if fnmatch.fnmatch(part, pnorm):
+                    return True
+    return False
+
+
+def get_exif_from_handle(f):
+    """Extract EXIF metadata from an already-open file handle positioned at byte 0."""
     try:
-        with open(path, 'rb') as f:
-            tags = exifread.process_file(f, details=False)
+        tags = exifread.process_file(f, details=False)
 
-            def get_tag(tag_name, default='N/A'):
-                val = tags.get(tag_name)
-                return val.printable.strip() if val else default
+        def get_tag(name, default='N/A'):
+            val = tags.get(name)
+            return val.printable.strip() if val else default
 
-            return {
-                'DateTime': get_tag('EXIF DateTimeOriginal', get_tag('Image DateTime')),
-                'Copyright': get_tag('Image Copyright'),
-                'Artist': get_tag('Image Artist'),
-                'Software': get_tag('Image Software'),
-                'ImageDescription': get_tag('Image ImageDescription'),
-                'Keywords': get_tag('Iptc.Application2.Keywords', get_tag('XMP-dc:Subject')),
-            }, None
-    except Exception as e:
         return {
-            'DateTime': 'N/A',
-            'Copyright': 'N/A',
-            'Artist': 'N/A',
-            'Software': 'N/A',
-            'ImageDescription': 'N/A',
-            'Keywords': 'N/A',
-        }, f"Could not read EXIF data: {e}"
+            'DateTime':         get_tag('EXIF DateTimeOriginal', get_tag('Image DateTime')),
+            'Copyright':        get_tag('Image Copyright'),
+            'Artist':           get_tag('Image Artist'),
+            'Software':         get_tag('Image Software'),
+            'ImageDescription': get_tag('Image ImageDescription'),
+            'Keywords':         get_tag('Iptc.Application2.Keywords', get_tag('XMP-dc:Subject')),
+        }, None
+    except Exception as e:
+        return {k: 'N/A' for k in ['DateTime', 'Copyright', 'Artist', 'Software', 'ImageDescription', 'Keywords']}, \
+               f"Could not read EXIF data: {e}"
 
-def create_thumbnail(path, thumbnails_dir, hash_str):
-    """Creates a high-quality, aspect-ratio-preserved thumbnail, skipping if it already exists."""
-    thumbnail_path = os.path.join(thumbnails_dir, f"{hash_str}.webp")
+
+def create_thumbnail(path, thumbnails_dir, sha256_hex):
+    """Creates a thumbnail named by SHA256, skipping if it already exists."""
+    thumbnail_path = os.path.join(thumbnails_dir, f"{sha256_hex}.webp")
     if os.path.exists(thumbnail_path):
         return True
     try:
-        img = Image.open(path)
-        img.thumbnail((256, 256))
-        if img.mode not in ('RGB', 'L'):
-            img = img.convert('RGB')
-        img.save(thumbnail_path, "WEBP", quality=80, method=6)
+        with Image.open(path) as img:
+            img.thumbnail((256, 256))
+            if img.mode not in ('RGB', 'L'):
+                img = img.convert('RGB')
+            img.save(thumbnail_path, "WEBP", quality=80, method=6)
         return True
     except Exception:
         return False
 
+
 def process_single_image_for_scan(full_path, identifier, min_size_kb, extensions):
     """
-    Worker function to process a single image file for the scan mode.
-    Returns a tuple of (data row, list of errors).
-    Data row is for the CSV on success, or None on failure/skip.
-    List of errors is a list of (path, error_message) tuples.
+    Scan mode worker. Reads only the image header — no full file reads.
+    SHA256 and perceptual hash are deferred to the thumbnail step.
+    Returns (row_data, errors).
     """
     errors = []
     try:
@@ -74,9 +149,12 @@ def process_single_image_for_scan(full_path, identifier, min_size_kb, extensions
         if file_size_kb < min_size_kb:
             return None, []
 
-        sha256_hash = hashlib.sha256()
         width, height = 0, 0
+        exif_data = {k: 'N/A' for k in ['DateTime', 'Copyright', 'Artist', 'Software', 'ImageDescription', 'Keywords']}
+
         with open(full_path, 'rb') as f:
+            # PIL lazy-loads: Image.open() reads only the file header to get dimensions.
+            # No pixel data is decoded — typically 10-50KB, not the full file.
             try:
                 with Image.open(f) as img:
                     width, height = img.size
@@ -84,216 +162,512 @@ def process_single_image_for_scan(full_path, identifier, min_size_kb, extensions
                 errors.append((full_path, f"File format not recognized or image is corrupt: {e}"))
                 return None, errors
 
+            # Rewind and pass the same open handle to exifread — avoids a second file open.
             f.seek(0)
-            for byte_block in iter(lambda: f.read(4096), b''):
-                sha256_hash.update(byte_block)
-            sha256_hex = sha256_hash.hexdigest()
-
-        exif_data, exif_error = get_exif_data(full_path)
-        if exif_error:
-            errors.append((full_path, exif_error))
+            exif_data, exif_error = get_exif_from_handle(f)
+            if exif_error:
+                errors.append((full_path, exif_error))
 
         return [
-            identifier,
-            full_path,
-            os.path.basename(full_path),
-            file_ext[1:],
+            identifier, full_path, os.path.basename(full_path), file_ext[1:],
             f"{file_size_kb:.2f}",
-            'N/A',  # PerceptualHash placeholder
-            sha256_hex,
-            width,
-            height,
-            exif_data['DateTime'],
-            exif_data['Copyright'],
-            exif_data['Artist'],
-            exif_data['Software'],
-            exif_data['ImageDescription'],
-            exif_data['Keywords'],
+            'N/A',  # PerceptualHash — computed in thumbnail step
+            'N/A',  # SHA256 — computed in thumbnail step
+            width, height,
+            exif_data['DateTime'], exif_data['Copyright'], exif_data['Artist'],
+            exif_data['Software'], exif_data['ImageDescription'], exif_data['Keywords'],
         ], errors
+
     except (IOError, OSError) as e:
         errors.append((full_path, f"IO/OS Error: {e}"))
         return None, errors
 
-def create_thumbnail_and_phash(input_row, full_path_index, sha256_index, phash_index, thumbnails_dir):
-    """Worker function to create a thumbnail and then generate a perceptual hash from it."""
+
+def _quick_key(path):
+    """
+    Returns (file_size_bytes, blake2b_of_first_64KB) for fast duplicate detection.
+    Reading only 64KB catches virtually all duplicate photo files — the first 64KB of
+    a JPEG contains the full EXIF header (capture time, GPS, camera) and the start of
+    compressed image data, making accidental collision between different photos
+    astronomically unlikely.
+    Raises IOError/OSError on unreadable files.
+    """
+    size = os.path.getsize(path)
+    with open(path, 'rb') as f:
+        head = f.read(QUICK_HASH_BYTES)
+    return (size, hashlib.blake2b(head, digest_size=16).hexdigest())
+
+
+def process_unique_image(input_row, full_path_index, sha256_index, phash_index, thumbnails_dir, existing_thumbnails):
+    """
+    Thumbnail mode worker, called only for files that passed the quick-hash dedup check.
+    Streams the full file to compute SHA256, creates a thumbnail, computes perceptual hash.
+    existing_thumbnails is a frozenset of SHA256 hex strings loaded from disk at startup,
+    used to skip thumbnail creation for images processed in prior runs without a per-file
+    os.path.exists() call.
+    """
     full_path = input_row[full_path_index]
-    sha256_hex = input_row[sha256_index]
+    output_row = list(input_row)
 
-    if not create_thumbnail(full_path, thumbnails_dir, sha256_hex):
-        input_row[phash_index] = 'N/A'
-        return input_row
+    sha256_hash = hashlib.sha256()
+    try:
+        with open(full_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(HASH_CHUNK_SIZE), b''):
+                sha256_hash.update(chunk)
+        sha256_hex = sha256_hash.hexdigest()
+    except (IOError, OSError):
+        output_row[sha256_index] = 'N/A'
+        output_row[phash_index] = 'N/A'
+        return output_row
 
+    output_row[sha256_index] = sha256_hex
     thumbnail_path = os.path.join(thumbnails_dir, f"{sha256_hex}.webp")
+
+    # Memory-first check (prior runs), then disk fallback (same-run SHA256 collisions)
+    if sha256_hex not in existing_thumbnails and not os.path.exists(thumbnail_path):
+        if not create_thumbnail(full_path, thumbnails_dir, sha256_hex):
+            output_row[phash_index] = 'N/A'
+            return output_row
+
     try:
         with Image.open(thumbnail_path) as thumb_img:
-            perceptual_hash_val = imagehash.dhash(thumb_img)
-            perceptual_hash_str = str(perceptual_hash_val)
+            output_row[phash_index] = str(imagehash.dhash(thumb_img))
     except Exception:
-        perceptual_hash_str = 'N/A'
+        output_row[phash_index] = 'N/A'
 
-    input_row[phash_index] = perceptual_hash_str
-    return input_row
+    return output_row
 
-def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions, max_workers):
-    """Scans a directory, gathers image metadata, and saves it to a CSV catalog."""
+
+def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions, max_workers, exclusion_patterns=None):
+    """Scans a directory, reads only image headers (fast), saves metadata to a CSV catalog."""
     processed_paths = set()
     is_new_file = not os.path.exists(catalog_file) or os.path.getsize(catalog_file) == 0
     if not is_new_file:
         try:
-            with open(catalog_file, 'r', newline='', encoding='utf-8') as csvfile:
-                reader = csv.reader(csvfile)
+            with open(catalog_file, 'r', newline='', encoding='utf-8') as f:
+                reader = csv.reader(f)
                 header = next(reader)
-                full_path_index = header.index('FullPath')
+                fpi = header.index('FullPath')
                 for row in reader:
-                    if len(row) > full_path_index:
-                        processed_paths.add(row[full_path_index])
-            print(f"Found {len(processed_paths)} files already in the catalog.")
+                    if len(row) > fpi:
+                        processed_paths.add(row[fpi])
+            print(f"Found {len(processed_paths):,} files already in catalog.")
         except (IOError, StopIteration, ValueError) as e:
-            print(f"Warning: Could not read existing catalog file. Starting fresh. Error: {e}")
+            print(f"Warning: could not read existing catalog, starting fresh. ({e})")
             is_new_file = True
 
-    all_files_in_dir = []
-    for dirpath, _, filenames in os.walk(root_dir):
+    print("Walking directory tree...")
+    all_files = []
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        # Prune excluded directories in-place — os.walk will not descend into them.
+        # This is much faster than descending and filtering afterwards.
+        if exclusion_patterns:
+            dirnames[:] = [d for d in dirnames
+                           if not is_excluded(os.path.join(dirpath, d), exclusion_patterns)]
         for filename in filenames:
-            all_files_in_dir.append(os.path.join(dirpath, filename))
+            full_path = os.path.join(dirpath, filename)
+            if not exclusion_patterns or not is_excluded(full_path, exclusion_patterns):
+                all_files.append(full_path)
 
-    files_to_process = [p for p in all_files_in_dir if p not in processed_paths]
-
+    files_to_process = [p for p in all_files if p not in processed_paths]
     if not files_to_process:
         print("No new files to process.")
         return
 
-    print(f"Total files to process: {len(files_to_process)}")
+    print(f"Files to process: {len(files_to_process):,}")
 
     output_dir = os.path.dirname(catalog_file)
-    error_log_file = os.path.join(output_dir, f"{identifier}_errors.csv")
-    is_new_error_file = not os.path.exists(error_log_file) or os.path.getsize(error_log_file) == 0
+    error_log = os.path.join(output_dir, f"{identifier}_errors.csv")
+    is_new_error = not os.path.exists(error_log) or os.path.getsize(error_log) == 0
 
     with open(catalog_file, 'a', newline='', encoding='utf-8') as csvfile, \
-         open(error_log_file, 'a', newline='', encoding='utf-8') as errorfile:
+         open(error_log, 'a', newline='', encoding='utf-8') as errorfile:
         writer = csv.writer(csvfile)
         error_writer = csv.writer(errorfile)
 
         if is_new_file:
-            header = [
-                'Identifier', 'FullPath', 'FileName', 'FileType', 'FileSizeKB', 'PerceptualHash', 'SHA256',
-                'Width', 'Height', 'DateTime', 'Copyright', 'Artist', 'Software',
-                'ImageDescription', 'Keywords'
-            ]
-            writer.writerow(header)
+            writer.writerow(['Identifier', 'FullPath', 'FileName', 'FileType', 'FileSizeKB',
+                             'PerceptualHash', 'SHA256', 'Width', 'Height', 'DateTime',
+                             'Copyright', 'Artist', 'Software', 'ImageDescription', 'Keywords'])
             csvfile.flush()
-
-        if is_new_error_file:
+        if is_new_error:
             error_writer.writerow(['FullPath', 'Error'])
             errorfile.flush()
 
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-            worker_func = partial(process_single_image_for_scan,
-                                  identifier=identifier,
-                                  min_size_kb=min_size_kb,
-                                  extensions=extensions)
-
-            results = executor.map(worker_func, files_to_process)
-
-            for row_data, errors in tqdm(results, total=len(files_to_process), desc="Scanning New Images"):
+            worker = partial(process_single_image_for_scan,
+                             identifier=identifier, min_size_kb=min_size_kb, extensions=extensions)
+            for i, (row_data, errors) in enumerate(
+                    tqdm(executor.map(worker, files_to_process),
+                         total=len(files_to_process), desc="Scanning")):
                 if row_data:
                     writer.writerow(row_data)
+                for path, msg in errors:
+                    error_writer.writerow([path, msg])
+                if i % 100 == 0:
                     csvfile.flush()
-                if errors:
-                    for path, error_msg in errors:
-                        error_writer.writerow([path, error_msg])
                     errorfile.flush()
 
-def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir, max_workers):
-    """Generates thumbnails and perceptual hashes, creating a new, enriched catalog file."""
+        csvfile.flush()
+        errorfile.flush()
+
+
+def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir, max_workers, yes=False):
+    """
+    Generates thumbnails and perceptual hashes, producing an enriched catalog.
+
+    Three phases:
+      1. Quick-hash every file (reads only the first 64KB) to detect duplicates cheaply.
+         Only unique files proceed to phase 2; duplicates copy results from their canonical.
+      2. Process unique files in parallel: stream full SHA256, create thumbnail, compute phash.
+      3. Write duplicate rows with SHA256/phash copied from their canonical file.
+
+    Supports resume: re-running will skip files already written to the output catalog.
+    """
     os.makedirs(thumbnails_dir, exist_ok=True)
+
+    # Load existing thumbnail SHA256s into memory — avoids a per-file os.path.exists()
+    # call for thumbnails already created in prior runs.
+    existing_thumbnails = frozenset(
+        os.path.splitext(f)[0] for f in os.listdir(thumbnails_dir) if f.endswith('.webp')
+    )
+    print(f"Found {len(existing_thumbnails):,} existing thumbnails.")
+
+    # Resume: skip files already written to the output catalog
+    processed_paths = set()
+    is_new_output = not os.path.exists(output_catalog_file) or os.path.getsize(output_catalog_file) == 0
+    if not is_new_output:
+        try:
+            with open(output_catalog_file, 'r', newline='', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                hdr = next(reader)
+                fpi = hdr.index('FullPath')
+                for row in reader:
+                    if len(row) > fpi:
+                        processed_paths.add(row[fpi])
+            print(f"Resuming: {len(processed_paths):,} already processed.")
+        except Exception:
+            is_new_output = True
 
     try:
-        with open(catalog_file, 'r', newline='', encoding='utf-8') as infile, \
-             open(output_catalog_file, 'w', newline='', encoding='utf-8') as outfile:
-
+        with open(catalog_file, 'r', newline='', encoding='utf-8') as infile:
             reader = csv.reader(infile)
-            writer = csv.writer(outfile)
-
             header = next(reader)
+            full_path_index = header.index('FullPath')
+            sha256_index    = header.index('SHA256')
+            phash_index     = header.index('PerceptualHash')
+            images_to_process = [
+                r for r in reader
+                if len(r) > full_path_index and r[full_path_index] not in processed_paths
+            ]
+    except (IOError, StopIteration, ValueError) as e:
+        print(f"Error reading catalog: {e}")
+        return
+
+    if not images_to_process:
+        print("No images to process.")
+        return
+
+    print(f"Found {len(images_to_process):,} images to process.")
+
+    # --- Phase 1: Quick-hash all files to detect duplicates (reads only 64KB per file) ---
+    print(f"\nPhase 1: Quick-hashing {len(images_to_process):,} files to detect duplicates...")
+    quick_hash_to_row = {}  # quick_key -> first (canonical) row seen with that key
+    unique_rows      = []
+    duplicate_pairs  = []   # (dup_row, canonical_row)
+
+    for row in tqdm(images_to_process, desc="Quick-hashing"):
+        path = row[full_path_index]
+        try:
+            qkey = _quick_key(path)
+        except (IOError, OSError):
+            # Pass unreadable files to the worker so errors surface consistently
+            unique_rows.append(row)
+            continue
+
+        if qkey not in quick_hash_to_row:
+            quick_hash_to_row[qkey] = row
+            unique_rows.append(row)
+        else:
+            duplicate_pairs.append((row, quick_hash_to_row[qkey]))
+
+    print(f"  Unique files:          {len(unique_rows):,}")
+    print(f"  Duplicates (skipped):  {len(duplicate_pairs):,}")
+
+    # --- Space check before the expensive work ---
+    THUMB_KB_ESTIMATE = 25
+    # Upper bound: assume none of the unique files have existing thumbnails yet.
+    # (We can't know for sure until we compute SHA256 in the worker.)
+    est_new = max(0, len(unique_rows) - len(existing_thumbnails))
+    est_storage_gb = est_new * THUMB_KB_ESTIMATE / (1024 * 1024)
+    print(f"\nSpace estimate:")
+    print(f"  Unique files to process:    {len(unique_rows):,}")
+    print(f"  Existing thumbnails:        {len(existing_thumbnails):,}  (reused from prior runs)")
+    print(f"  New thumbnails (est max):   ~{est_new:,}  (~{est_storage_gb:.1f} GB at ~{THUMB_KB_ESTIMATE} KB each)")
+    try:
+        free_gb = shutil.disk_usage(thumbnails_dir).free / (1024 ** 3)
+        if est_storage_gb > free_gb * 0.85:
+            print(f"  Free disk space:            {free_gb:.1f} GB  ⚠  may not be enough")
+            if not yes:
+                try:
+                    resp = input("\n  Proceed anyway? [y/N] ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    resp = 'n'
+                if resp != 'y':
+                    print("Aborted.")
+                    return
+        else:
+            print(f"  Free disk space:            {free_gb:.1f} GB  ✓")
+    except Exception:
+        pass
+
+    # --- Phase 2: Process unique files ---
+    print(f"\nPhase 2: Thumbnailing {len(unique_rows):,} unique files...")
+    results_by_path = {}  # canonical_path -> output_row, for filling in duplicate entries
+
+    with open(output_catalog_file, 'a', newline='', encoding='utf-8') as outfile:
+        writer = csv.writer(outfile)
+        if is_new_output:
             writer.writerow(header)
 
-            full_path_index = header.index('FullPath')
-            sha256_index = header.index('SHA256')
-            phash_index = header.index('PerceptualHash')
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            worker = partial(process_unique_image,
+                             full_path_index=full_path_index,
+                             sha256_index=sha256_index,
+                             phash_index=phash_index,
+                             thumbnails_dir=thumbnails_dir,
+                             existing_thumbnails=existing_thumbnails)
 
-            images_to_process = list(reader)
-            if not images_to_process:
-                print("No images found in the catalog file.")
-                return
+            for i, (input_row, output_row) in enumerate(
+                    zip(unique_rows,
+                        tqdm(executor.map(worker, unique_rows),
+                             total=len(unique_rows), desc="Thumbnailing"))):
+                writer.writerow(output_row)
+                results_by_path[input_row[full_path_index]] = output_row
+                if i % 100 == 0:
+                    outfile.flush()
 
-            print(f"Found {len(images_to_process)} images to process.")
+        # --- Phase 3: Write duplicate rows, copying SHA256/phash from their canonical ---
+        if duplicate_pairs:
+            print(f"\nPhase 3: Writing {len(duplicate_pairs):,} duplicate entries...")
+            for dup_row, canonical_row in duplicate_pairs:
+                out = list(dup_row)
+                canonical = results_by_path.get(canonical_row[full_path_index])
+                if canonical:
+                    out[sha256_index] = canonical[sha256_index]
+                    out[phash_index]  = canonical[phash_index]
+                writer.writerow(out)
+            outfile.flush()
 
-            with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-                worker_func = partial(create_thumbnail_and_phash,
-                                      full_path_index=full_path_index,
-                                      sha256_index=sha256_index,
-                                      phash_index=phash_index,
-                                      thumbnails_dir=thumbnails_dir)
 
-                results = executor.map(worker_func, images_to_process)
+def _format_duration(minutes):
+    if minutes < 1:
+        return "< 1 min"
+    if minutes < 60:
+        return f"~{int(minutes)} min"
+    hours = minutes / 60
+    if hours < 24:
+        return f"~{hours:.1f} hrs"
+    return f"~{hours / 24:.1f} days"
 
-                for output_row in tqdm(results, total=len(images_to_process), desc="Generating Thumbnails and Hashes"):
-                    writer.writerow(output_row)
 
-    except (IOError, StopIteration, ValueError) as e:
-        print(f"Error: Could not read catalog file. {e}")
+def estimate_mode(root_dir, min_size_kb, extensions, exclusion_patterns=None):
+    """
+    Zero-read pre-flight analysis using only filesystem metadata (no file content reads).
+    Walks the directory, counts candidate image files, estimates duplicates by file size,
+    and gives tight time estimates based on actual extension breakdown.
+    """
+    # PIL decode time estimates per file by extension (seconds).
+    # JPEGs are fast (lossy compressed, hardware-accelerated paths in libjpeg).
+    # TIFFs and PSDs can be very slow — an uncompressed 200MP TIFF may take 10–30 s.
+    PIL_SECS = {
+        'jpg': 0.3, 'jpeg': 0.3,
+        'png':  1.0,
+        'tif':  6.0, 'tiff': 6.0,
+        'psd': 10.0,
+    }
+    PIL_SECS_DEFAULT = 1.0
+
+    print("Walking directory (metadata only — no file content reads)...")
+    all_files = []  # (size_bytes, ext)
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        if exclusion_patterns:
+            dirnames[:] = [d for d in dirnames
+                           if not is_excluded(os.path.join(dirpath, d), exclusion_patterns)]
+        for filename in filenames:
+            ext = os.path.splitext(filename)[1].lower()
+            if not ext or ext[1:] not in extensions:
+                continue
+            path = os.path.join(dirpath, filename)
+            if exclusion_patterns and is_excluded(path, exclusion_patterns):
+                continue
+            try:
+                size = os.path.getsize(path)
+                if size / 1024 >= min_size_kb:
+                    all_files.append((size, ext[1:]))
+            except OSError:
+                pass
+
+    total = len(all_files)
+    if total == 0:
+        print("No candidate image files found.")
+        return
+
+    all_sizes   = [s for s, _ in all_files]
+    total_gb    = sum(all_sizes) / (1024 ** 3)
+    avg_mb      = (total_gb * 1024) / total
+
+    # Extension breakdown
+    ext_counts = defaultdict(int)
+    for _, ext in all_files:
+        ext_counts[ext] += 1
+
+    # Group by exact file size as a duplicate proxy.
+    size_counts = defaultdict(int)
+    for s, _ in all_files:
+        size_counts[s] += 1
+    unique_sizes = len(size_counts)
+    likely_dupes = sum(c - 1 for c in size_counts.values() if c > 1)
+
+    # Total data volume of unique files (each unique size counted once).
+    unique_total_gb = sum(size_counts.keys()) / (1024 ** 3)
+
+    # Weighted PIL time based on actual extension mix.
+    # Scale to unique_sizes since only unique files get thumbnailed.
+    total_pil_secs = sum(PIL_SECS.get(ext, PIL_SECS_DEFAULT) * count
+                         for ext, count in ext_counts.items())
+    avg_pil_secs   = total_pil_secs / total
+    est_pil_min    = avg_pil_secs * unique_sizes / 60
+
+    # Thumbnail storage: one 256×256 WebP per unique file, ~25 KB each.
+    THUMB_KB_ESTIMATE = 25
+    est_thumb_gb = unique_sizes * THUMB_KB_ESTIMATE / (1024 * 1024)
+
+    print(f"\n{'=' * 54}")
+    print(f"  Total candidate image files:  {total:>10,}")
+    print(f"  Total size on disk:           {total_gb:>9.1f} GB")
+    print(f"  Average file size:            {avg_mb:>9.1f} MB")
+    print(f"  File types found:")
+    for ext in sorted(ext_counts, key=lambda e: -ext_counts[e]):
+        print(f"    .{ext:<8}  {ext_counts[ext]:>8,} files")
+    print(f"{'=' * 54}")
+    print(f"  Duplicate estimate (by file size — no file reads):")
+    print(f"    Unique file sizes:          {unique_sizes:>10,}")
+    print(f"    Likely duplicates:          {likely_dupes:>10,}  ({100 * likely_dupes / total:.1f}%)")
+    print(f"    Estimated unique images:    {unique_sizes:>10,} – {total:>10,}")
+    print(f"    Data to read (unique only): {unique_total_gb:>9.1f} GB")
+    print(f"{'=' * 54}")
+    print(f"  Thumbnail storage estimate:")
+    print(f"    ~{unique_sizes:,} thumbnails × ~{THUMB_KB_ESTIMATE} KB  =  ~{est_thumb_gb:.1f} GB")
+    try:
+        free_gb = shutil.disk_usage('.').free / (1024 ** 3)
+        marker  = "✓" if free_gb > est_thumb_gb * 1.5 else "⚠  may be tight"
+        print(f"    Current free disk space:    {free_gb:>9.1f} GB  {marker}")
+    except Exception:
+        pass
+    print(f"{'=' * 54}")
+
+    # Time estimates for a spinning drive, single worker (--hdd).
+    #
+    # Scan: header reads only. Seek-dominated: ~30–100 files/sec.
+    scan_fast = total / 100
+    scan_slow  = total / 30
+    #
+    # Thumbnail phase 1 (quick-hash): 64 KB/file regardless of actual file size.
+    # A 500 MB TIFF costs the same as a 5 MB JPEG here. Seek-dominated: ~50–100 files/sec.
+    qhash_fast = total / 100
+    qhash_slow = total / 50
+    #
+    # Thumbnail phase 2: unique files only.
+    #   I/O: full file read for SHA256 at ~100 MB/s.
+    #   PIL: weighted by actual extension mix (computed above).
+    #   ±30% on each to account for real-world variability.
+    io_min     = (unique_total_gb * 1024) / 100 / 60
+    thumb_fast = io_min + est_pil_min * 0.7
+    thumb_slow = io_min * 1.3 + est_pil_min * 1.3
+
+    print(f"\n  Estimated times on a spinning drive (--hdd mode):")
+    print(f"    estimate:            seconds (this step)")
+    print(f"    scan:                {_format_duration(scan_fast)} – {_format_duration(scan_slow)}")
+    print(f"    thumbnail phase 1:   {_format_duration(qhash_fast)} – {_format_duration(qhash_slow)}  (quick-hash, 64 KB/file)")
+    print(f"    thumbnail phase 2:   {_format_duration(thumb_fast)} – {_format_duration(thumb_slow)}  ({unique_sizes:,} unique files, {unique_total_gb:.1f} GB to read)")
+    print(f"\n  Use --hdd on scan and thumbnail commands for spinning drives.")
+    print(f"{'=' * 54}\n")
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Scan for images and generate thumbnails.")
-    parser.add_argument('--output-dir', type=str, default='output', help='The directory to store all output files.')
-    subparsers = parser.add_subparsers(dest='mode', required=True, help='The mode to run in.')
+    parser = argparse.ArgumentParser(
+        description="Scan drives for images, generate thumbnails, and build a searchable catalog.")
+    parser.add_argument('--output-dir', type=str, default='output', help='Directory for all output files.')
+    subparsers = parser.add_subparsers(dest='mode', required=True)
 
-    # Scan command
-    scan_parser = subparsers.add_parser('scan', help='Scan a directory to find files and create a catalog.')
-    scan_parser.add_argument('identifier', type=str, help='A unique name for this scan, used to generate filenames.')
-    scan_parser.add_argument('--directory', type=str, required=True, help='The root directory to scan.')
-    scan_parser.add_argument('--min-size', type=int, default=100, help='Minimum file size in KB to process.')
-    scan_parser.add_argument('--extensions', type=str, default='jpg,jpeg,png,tiff,tif,psd', help='Comma-separated image extensions to scan.')
-    scan_parser.add_argument('--max-workers', type=int, default=None, help='Maximum number of worker processes to use. Defaults to the number of CPU cores.')
+    # estimate
+    est = subparsers.add_parser('estimate',
+        help='Pre-flight: count files, estimate duplicates and processing time. No file reads.')
+    est.add_argument('--directory', type=str, required=True, help='Directory to analyse.')
+    est.add_argument('--min-size', type=int, default=100, help='Minimum file size in KB.')
+    est.add_argument('--extensions', type=str, default='jpg,jpeg,png,tiff,tif,psd',
+                     help='Comma-separated extensions to count.')
+    est.add_argument('--exclusions', type=str, default='exclusions.txt',
+                     help='Path to exclusions file (default: exclusions.txt).')
 
-    # Thumbnail command
-    thumb_parser = subparsers.add_parser('thumbnail', help='Generate thumbnails and perceptual hashes from a catalog.')
-    thumb_parser.add_argument('identifier', type=str, help='The unique name for the scan, used to find the input catalog.')
-    thumb_parser.add_argument('--max-workers', type=int, default=None, help='Maximum number of worker processes to use. Defaults to the number of CPU cores.')
+    # scan
+    scan_p = subparsers.add_parser('scan',
+        help='Scan a directory and build a metadata catalog (fast: reads image headers only).')
+    scan_p.add_argument('identifier', type=str, help='Unique name for this scan.')
+    scan_p.add_argument('--directory', type=str, required=True)
+    scan_p.add_argument('--min-size', type=int, default=100, help='Minimum file size in KB.')
+    scan_p.add_argument('--extensions', type=str, default='jpg,jpeg,png,tiff,tif,psd')
+    scan_p.add_argument('--max-workers', type=int, default=None,
+                        help='Worker processes (default: CPU count). Ignored when --hdd is set.')
+    scan_p.add_argument('--hdd', action='store_true',
+                        help='Optimise for spinning drives: forces a single worker to avoid seek contention.')
+    scan_p.add_argument('--exclusions', type=str, default='exclusions.txt',
+                        help='Path to exclusions file (default: exclusions.txt).')
+
+    # thumbnail
+    thumb_p = subparsers.add_parser('thumbnail',
+        help='Generate thumbnails and hashes from a catalog. Deduplicates and supports resume.')
+    thumb_p.add_argument('identifier', type=str)
+    thumb_p.add_argument('--max-workers', type=int, default=None,
+                         help='Worker processes (default: CPU count). Ignored when --hdd is set.')
+    thumb_p.add_argument('--hdd', action='store_true',
+                         help='Optimise for spinning drives: forces a single worker.')
+    thumb_p.add_argument('--yes', action='store_true',
+                         help='Skip the disk-space confirmation prompt (for unattended runs).')
 
     args = parser.parse_args()
+    output_dir     = args.output_dir
+    extensions_set = set(args.extensions.lower().split(',')) if hasattr(args, 'extensions') else set()
+    exclusions     = load_exclusions(args.exclusions) if hasattr(args, 'exclusions') else []
 
-    # --- Path Generation ---
-    output_dir = args.output_dir
-    thumbnails_dir = os.path.join(output_dir, 'thumbnails')
-    catalog_file = os.path.join(output_dir, f"{args.identifier}.csv")
-    final_catalog_file = os.path.join(output_dir, f"{args.identifier}_final.csv")
-    
-    os.makedirs(thumbnails_dir, exist_ok=True)
+    if args.mode == 'estimate':
+        create_exclusions_template(args.exclusions)
+        estimate_mode(args.directory, args.min_size, extensions_set, exclusion_patterns=exclusions)
 
-    extensions_set = set(args.extensions.lower().split(',')) if 'extensions' in args else set()
-
-    if args.mode == 'scan':
-        print(f"Starting scan '{args.identifier}'")
-        print(f"Scanning directory: {args.directory}")
-        print(f"Outputting catalog to: {catalog_file}")
-
-        scan_mode(args.identifier, args.directory, catalog_file, args.min_size, extensions_set, args.max_workers)
-        
-        print("\nScan complete.")
-        print(f"Catalog file created at: {catalog_file}")
+    elif args.mode == 'scan':
+        max_workers  = 1 if args.hdd else args.max_workers
+        catalog_file = os.path.join(output_dir, f"{args.identifier}.csv")
+        os.makedirs(output_dir, exist_ok=True)
+        create_exclusions_template(args.exclusions)
+        print(f"Scan '{args.identifier}'  →  {args.directory}")
+        if args.hdd:
+            print("HDD mode: single worker, sequential disk access.")
+        scan_mode(args.identifier, args.directory, catalog_file, args.min_size, extensions_set,
+                  max_workers, exclusion_patterns=exclusions)
+        print(f"\nScan complete. Catalog: {catalog_file}")
 
     elif args.mode == 'thumbnail':
-        print(f"Generating thumbnails and hashes for scan '{args.identifier}'")
-        print(f"Reading from: {catalog_file}")
-        print(f"Thumbnails will be saved in: {thumbnails_dir}")
-        print(f"Enriched catalog will be saved to: {final_catalog_file}")
-        
-        thumbnail_mode(catalog_file, final_catalog_file, thumbnails_dir, args.max_workers)
-        
-        print("\nThumbnail and hash generation complete.")
-        print(f"Enriched catalog file created at: {final_catalog_file}")
+        max_workers      = 1 if args.hdd else args.max_workers
+        thumbnails_dir   = os.path.join(output_dir, 'thumbnails')
+        catalog_file     = os.path.join(output_dir, f"{args.identifier}.csv")
+        final_catalog    = os.path.join(output_dir, f"{args.identifier}_final.csv")
+        print(f"Thumbnailing '{args.identifier}'")
+        if args.hdd:
+            print("HDD mode: single worker, sequential disk access.")
+        thumbnail_mode(catalog_file, final_catalog, thumbnails_dir, max_workers, yes=args.yes)
+        print(f"\nComplete. Enriched catalog: {final_catalog}")
+
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()

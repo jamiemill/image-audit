@@ -1,0 +1,18 @@
+# Exclusion patterns for scanner.py — one per line, # to comment.
+#
+# Patterns without a slash are matched against each directory name in the path.
+#   iPhoto Library          <- excludes any folder named exactly this
+#   *.photoslibrary         <- excludes any folder matching this glob
+#
+# Patterns with a slash are matched against the full path.
+#   /Volumes/MyDrive/Old Backups/2003
+#
+# Common patterns (remove the leading # to enable):
+# iPhoto Library
+# *.photoslibrary
+# .Spotlight-V100
+# .Trashes
+# .fseventsd
+# System Volume Information
+# $RECYCLE.BIN
+# Thumbs.db
