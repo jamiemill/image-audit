@@ -1,6 +1,7 @@
 import os
 import argparse
 import csv
+import json
 import shutil
 import fnmatch
 import logging
@@ -21,6 +22,11 @@ logging.getLogger('exifread').setLevel(logging.CRITICAL)
 # Suppress PIL UserWarnings (e.g. "Corrupt EXIF data", "Truncated file").
 # Real failures surface as exceptions and are caught + logged to the error CSV.
 warnings.filterwarnings('ignore', category=UserWarning, module='PIL')
+
+# Disable PIL's decompression bomb limit. The default (178M pixels) is too low
+# for large TIFFs and PSDs in professional photography workflows. These are
+# trusted local files, not user-uploaded content.
+Image.MAX_IMAGE_PIXELS = None
 
 # Pillow has a limit to prevent decompression bombs. Set it to a large but sane value.
 Image.MAX_IMAGE_PIXELS = 500000000
@@ -130,7 +136,9 @@ def create_thumbnail(path, thumbnails_dir, sha256_hex):
                 img = img.convert('RGB')
             img.save(thumbnail_path, "WEBP", quality=80, method=1)
         return True
-    except Exception:
+    except Exception as e:
+        import sys
+        print(f"\nThumbnail failed: {path}\n  Reason: {e}", file=sys.stderr)
         return False
 
 
@@ -251,8 +259,9 @@ def process_unique_image(input_row, full_path_index, sha256_index, phash_index, 
     return output_row
 
 
-def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions, max_workers, exclusion_patterns=None):
-    """Scans a directory, reads only image headers (fast), saves metadata to a CSV catalog."""
+def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions, max_workers, exclusion_patterns=None, fast=False):
+    """Scans a directory, reads only image headers (fast), saves metadata to a CSV catalog.
+    In fast mode, skips all file opens — records only path, size, and extension."""
     processed_paths = set()
     is_new_file = not os.path.exists(catalog_file) or os.path.getsize(catalog_file) == 0
     if not is_new_file:
@@ -288,13 +297,14 @@ def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions, max_w
             if not file_ext or file_ext[1:] not in extensions:
                 continue
             try:
-                if os.path.getsize(full_path) / 1024 < min_size_kb:
+                size_kb = os.path.getsize(full_path) / 1024
+                if size_kb < min_size_kb:
                     continue
             except OSError:
                 continue
-            all_files.append(full_path)
+            all_files.append((full_path, size_kb))
 
-    files_to_process = [p for p in all_files if p not in processed_paths]
+    files_to_process = [(p, s) for p, s in all_files if p not in processed_paths]
     if not files_to_process:
         print("No new files to process.")
         return
@@ -302,39 +312,51 @@ def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions, max_w
     print(f"Files to process: {len(files_to_process):,}")
 
     output_dir = os.path.dirname(catalog_file)
-    error_log = os.path.join(output_dir, f"{identifier}_errors.csv")
-    is_new_error = not os.path.exists(error_log) or os.path.getsize(error_log) == 0
 
-    with open(catalog_file, 'a', newline='', encoding='utf-8') as csvfile, \
-         open(error_log, 'a', newline='', encoding='utf-8') as errorfile:
+    with open(catalog_file, 'a', newline='', encoding='utf-8') as csvfile:
         writer = csv.writer(csvfile)
-        error_writer = csv.writer(errorfile)
 
         if is_new_file:
             writer.writerow(['Identifier', 'FullPath', 'FileName', 'FileType', 'FileSizeKB',
                              'PerceptualHash', 'SHA256', 'Width', 'Height', 'DateTime',
                              'Copyright', 'Artist', 'Software', 'ImageDescription', 'Keywords'])
             csvfile.flush()
-        if is_new_error:
-            error_writer.writerow(['FullPath', 'Error'])
-            errorfile.flush()
 
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-            worker = partial(process_single_image_for_scan,
-                             identifier=identifier, min_size_kb=min_size_kb, extensions=extensions)
-            for i, (row_data, errors) in enumerate(
-                    tqdm(executor.map(worker, files_to_process),
-                         total=len(files_to_process), desc="Scanning")):
-                if row_data:
-                    writer.writerow(row_data)
-                for path, msg in errors:
-                    error_writer.writerow([path, msg])
-                if i % 100 == 0:
+        if fast:
+            for i, (full_path, size_kb) in enumerate(tqdm(files_to_process, desc="Scanning (fast)")):
+                filename = os.path.basename(full_path)
+                ext = os.path.splitext(filename)[1].lstrip('.').upper()
+                writer.writerow([identifier, full_path, filename, ext, f"{size_kb:.1f}",
+                                 'N/A', 'N/A', 'N/A', 'N/A', 'N/A',
+                                 'N/A', 'N/A', 'N/A', 'N/A', 'N/A'])
+                if i % 500 == 0:
                     csvfile.flush()
+        else:
+            error_log = os.path.join(output_dir, f"{identifier}_errors.csv")
+            is_new_error = not os.path.exists(error_log) or os.path.getsize(error_log) == 0
+            with open(error_log, 'a', newline='', encoding='utf-8') as errorfile:
+                error_writer = csv.writer(errorfile)
+                if is_new_error:
+                    error_writer.writerow(['FullPath', 'Error'])
                     errorfile.flush()
 
+                paths_only = [p for p, _ in files_to_process]
+                with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+                    worker = partial(process_single_image_for_scan,
+                                     identifier=identifier, min_size_kb=min_size_kb, extensions=extensions)
+                    for i, (row_data, errors) in enumerate(
+                            tqdm(executor.map(worker, paths_only),
+                                 total=len(paths_only), desc="Scanning")):
+                        if row_data:
+                            writer.writerow(row_data)
+                        for path, msg in errors:
+                            error_writer.writerow([path, msg])
+                        if i % 100 == 0:
+                            csvfile.flush()
+                            errorfile.flush()
+                errorfile.flush()
+
         csvfile.flush()
-        errorfile.flush()
 
 
 def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir, max_workers, yes=False):
@@ -358,8 +380,11 @@ def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir, max_worker
     )
     print(f"Found {len(existing_thumbnails):,} existing thumbnails.")
 
-    # Resume: skip files already written to the output catalog
-    processed_paths = set()
+    # Resume: skip files already written to the output catalog.
+    # Also preload SHA256/phash for already-processed files so phase 3 can
+    # find canonical data even if it was written in a prior interrupted run.
+    processed_paths   = set()
+    preloaded_results = {}  # FullPath -> output row (for phase 3 resume)
     is_new_output = not os.path.exists(output_catalog_file) or os.path.getsize(output_catalog_file) == 0
     if not is_new_output:
         try:
@@ -370,6 +395,7 @@ def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir, max_worker
                 for row in reader:
                     if len(row) > fpi:
                         processed_paths.add(row[fpi])
+                        preloaded_results[row[fpi]] = row
             print(f"Resuming: {len(processed_paths):,} already processed.")
         except Exception:
             is_new_output = True
@@ -396,28 +422,59 @@ def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir, max_worker
     print(f"Found {len(images_to_process):,} images to process.")
 
     # --- Phase 1: Quick-hash all files to detect duplicates (reads only 64KB per file) ---
-    print(f"\nPhase 1: Quick-hashing {len(images_to_process):,} files to detect duplicates...")
-    quick_hash_to_row = {}  # quick_key -> first (canonical) row seen with that key
-    unique_rows      = []
-    duplicate_pairs  = []   # (dup_row, canonical_row)
+    # Checkpoint: if phase 1 completed in a prior run, reload its results from disk
+    # rather than re-running 14+ hours of quick-hashing.
+    checkpoint_file = output_catalog_file + '.phase1.json'
+    unique_rows     = None
+    duplicate_pairs = None
 
-    for row in tqdm(images_to_process, desc="Quick-hashing"):
-        path = row[full_path_index]
+    if os.path.exists(checkpoint_file):
+        print(f"\nFound phase 1 checkpoint — loading instead of re-running phase 1...")
         try:
-            qkey = _quick_key(path)
-        except (IOError, OSError):
-            # Pass unreadable files to the worker so errors surface consistently
-            unique_rows.append(row)
-            continue
+            with open(checkpoint_file, 'r', encoding='utf-8') as f:
+                cp = json.load(f)
+            # Filter out rows already processed by a prior phase 2 run.
+            unique_rows     = [r for r in cp['unique_rows']
+                               if r[full_path_index] not in processed_paths]
+            duplicate_pairs = [tuple(pair) for pair in cp['duplicate_pairs']]
+            print(f"  Unique files remaining:  {len(unique_rows):,}")
+            print(f"  Duplicate pairs:         {len(duplicate_pairs):,}")
+        except Exception as e:
+            print(f"  Warning: could not load checkpoint ({e}), re-running phase 1.")
+            os.remove(checkpoint_file)
+            unique_rows = duplicate_pairs = None
 
-        if qkey not in quick_hash_to_row:
-            quick_hash_to_row[qkey] = row
-            unique_rows.append(row)
-        else:
-            duplicate_pairs.append((row, quick_hash_to_row[qkey]))
+    if unique_rows is None:
+        print(f"\nPhase 1: Quick-hashing {len(images_to_process):,} files to detect duplicates...")
+        quick_hash_to_row = {}
+        unique_rows       = []
+        duplicate_pairs   = []
 
-    print(f"  Unique files:          {len(unique_rows):,}")
-    print(f"  Duplicates (skipped):  {len(duplicate_pairs):,}")
+        for row in tqdm(images_to_process, desc="Quick-hashing"):
+            path = row[full_path_index]
+            try:
+                qkey = _quick_key(path)
+            except (IOError, OSError):
+                unique_rows.append(row)
+                continue
+
+            if qkey not in quick_hash_to_row:
+                quick_hash_to_row[qkey] = row
+                unique_rows.append(row)
+            else:
+                duplicate_pairs.append((row, quick_hash_to_row[qkey]))
+
+        print(f"  Unique files:          {len(unique_rows):,}")
+        print(f"  Duplicates (skipped):  {len(duplicate_pairs):,}")
+
+        # Save checkpoint so phase 1 is never repeated if phase 2 is interrupted.
+        try:
+            with open(checkpoint_file, 'w', encoding='utf-8') as f:
+                json.dump({'unique_rows': unique_rows,
+                           'duplicate_pairs': [[d, c] for d, c in duplicate_pairs]}, f)
+            print(f"  Phase 1 checkpoint saved: {checkpoint_file}")
+        except Exception as e:
+            print(f"  Warning: could not save checkpoint ({e}). Continuing without it.")
 
     # --- Space check before the expensive work ---
     THUMB_KB_ESTIMATE = 25
@@ -448,7 +505,8 @@ def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir, max_worker
 
     # --- Phase 2: Process unique files ---
     print(f"\nPhase 2: Thumbnailing {len(unique_rows):,} unique files...")
-    results_by_path = {}  # canonical_path -> output_row, for filling in duplicate entries
+    # Seed with preloaded results so phase 3 can find canonicals processed in prior runs.
+    results_by_path = dict(preloaded_results)
 
     with open(output_catalog_file, 'a', newline='', encoding='utf-8') as outfile:
         writer = csv.writer(outfile)
@@ -483,6 +541,11 @@ def thumbnail_mode(catalog_file, output_catalog_file, thumbnails_dir, max_worker
                     out[phash_index]  = canonical[phash_index]
                 writer.writerow(out)
             outfile.flush()
+
+    # Phase 3 complete — checkpoint no longer needed.
+    if os.path.exists(checkpoint_file):
+        os.remove(checkpoint_file)
+        print(f"Phase 1 checkpoint removed.")
 
 
 def _format_size(size_gb):
@@ -654,6 +717,8 @@ def main():
                         help='Optimise for spinning drives: forces a single worker to avoid seek contention.')
     scan_p.add_argument('--exclusions', type=str, default='exclusions.txt',
                         help='Path to exclusions file (default: exclusions.txt).')
+    scan_p.add_argument('--fast', action='store_true',
+                        help='Skip file opens entirely: record only path, size, and extension. No dimensions or EXIF.')
 
     # thumbnail
     thumb_p = subparsers.add_parser('thumbnail',
@@ -683,8 +748,10 @@ def main():
         print(f"Scan '{args.identifier}'  →  {args.directory}")
         if args.hdd:
             print("HDD mode: single worker, sequential disk access.")
+        if args.fast:
+            print("Fast mode: skipping file opens, no dimensions or EXIF.")
         scan_mode(args.identifier, args.directory, catalog_file, args.min_size, extensions_set,
-                  max_workers, exclusion_patterns=exclusions)
+                  max_workers, exclusion_patterns=exclusions, fast=args.fast)
         print(f"\nScan complete. Catalog: {catalog_file}")
 
     elif args.mode == 'thumbnail':
