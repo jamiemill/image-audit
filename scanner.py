@@ -102,6 +102,19 @@ def is_excluded(path, patterns):
     return False
 
 
+def get_psd_dimensions(f):
+    """Read PSD/PSB image dimensions from the binary file header.
+    PSD format: bytes 14-17 = height, bytes 18-21 = width (big-endian uint32).
+    Works regardless of whether Photoshop 'Maximize Compatibility' was enabled."""
+    f.seek(0)
+    header = f.read(26)
+    if len(header) < 26 or header[:4] != b'8BPS':
+        raise ValueError("Not a valid PSD/PSB file")
+    height = int.from_bytes(header[14:18], 'big')
+    width  = int.from_bytes(header[18:22], 'big')
+    return width, height
+
+
 def get_exif_from_handle(f):
     """Extract EXIF metadata from an already-open file handle positioned at byte 0."""
     try:
@@ -136,9 +149,43 @@ def create_thumbnail(path, thumbnails_dir, sha256_hex):
                 img = img.convert('RGB')
             img.save(thumbnail_path, "WEBP", quality=80, method=1)
         return True
-    except Exception as e:
+    except Exception as pil_error:
+        # For PSDs saved without Maximize Compatibility, PIL can't open them.
+        # Detect PSD by magic bytes (works for both file paths and BytesIO).
+        is_psd = False
+        if isinstance(path, str):
+            is_psd = os.path.splitext(path)[1].lower() in ('.psd', '.psb')
+        elif hasattr(path, 'read'):
+            path.seek(0)
+            is_psd = path.read(4) == b'8BPS'
+            path.seek(0)
+
+        if is_psd:
+            try:
+                from psd_tools import PSDImage
+                if hasattr(path, 'seek'):
+                    path.seek(0)
+                with PSDImage.open(path) as psd:
+                    img = psd.composite()
+                if img is None:
+                    raise ValueError("PSD composite returned None (no visible layers?)")
+                img.thumbnail((256, 256), Image.Resampling.BILINEAR)
+                if img.mode not in ('RGB', 'L'):
+                    img = img.convert('RGB')
+                img.save(thumbnail_path, "WEBP", quality=80, method=1)
+                return True
+            except ImportError:
+                import sys
+                print(f"\nThumbnail failed (PSD needs psd-tools): {path}"
+                      f"\n  Run: pip install psd-tools", file=sys.stderr)
+                return False
+            except Exception as e:
+                import sys
+                print(f"\nThumbnail failed (PSD): {path}\n  Reason: {e}", file=sys.stderr)
+                return False
+
         import sys
-        print(f"\nThumbnail failed: {path}\n  Reason: {e}", file=sys.stderr)
+        print(f"\nThumbnail failed: {path}\n  Reason: {pil_error}", file=sys.stderr)
         return False
 
 
@@ -167,9 +214,18 @@ def process_single_image_for_scan(full_path, identifier, min_size_kb, extensions
             try:
                 with Image.open(f) as img:
                     width, height = img.size
-            except Exception as e:
-                errors.append((full_path, f"File format not recognized or image is corrupt: {e}"))
-                return None, errors
+            except Exception:
+                # PIL can't open this file — common for PSDs saved without
+                # Maximize Compatibility. Try reading dimensions from header.
+                if file_ext[1:] in ('psd', 'psb'):
+                    try:
+                        width, height = get_psd_dimensions(f)
+                    except Exception as e:
+                        errors.append((full_path, f"Could not read PSD dimensions: {e}"))
+                        return None, errors
+                else:
+                    errors.append((full_path, f"File format not recognized or image is corrupt"))
+                    return None, errors
 
             # Rewind and pass the same open handle to exifread — avoids a second file open.
             f.seek(0)
