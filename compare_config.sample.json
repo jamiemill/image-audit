@@ -1,0 +1,11 @@
+{
+  "left": {
+    "label": "Reference Place",
+    "csv_files": ["output/reference_place_final.csv"]
+  },
+  "right": {
+    "label": "Place to find matches",
+    "csv_files": ["output/another_place_final.csv"]
+  },
+  "threshold": 10
+}
