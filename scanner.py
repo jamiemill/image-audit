@@ -9,6 +9,10 @@ import warnings
 from collections import defaultdict
 from PIL import Image
 import imagehash
+try:
+    from psd_tools import PSDImage as _PSDImage
+except ImportError:
+    _PSDImage = None
 import exifread
 from tqdm import tqdm
 import concurrent.futures
@@ -72,6 +76,21 @@ def load_exclusions(exclusions_file):
     return patterns
 
 
+def load_inclusions(inclusions_file):
+    """Load inclusion patterns from file. Returns empty list if file doesn't exist."""
+    if not os.path.exists(inclusions_file):
+        return []
+    patterns = []
+    with open(inclusions_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                patterns.append(line)
+    if patterns:
+        print(f"Loaded {len(patterns)} inclusion pattern(s) from {inclusions_file}")
+    return patterns
+
+
 def create_exclusions_template(exclusions_file):
     """Write a template exclusions file if one does not already exist."""
     if not os.path.exists(exclusions_file):
@@ -94,6 +113,9 @@ def is_excluded(path, patterns):
         pnorm = pattern.replace(os.sep, '/')
         if '/' in pnorm:
             if fnmatch.fnmatch(norm, pnorm):
+                return True
+            # Also match any file inside this directory path
+            if norm.startswith(pnorm.rstrip('/') + '/'):
                 return True
         else:
             for part in parts:
@@ -161,12 +183,16 @@ def create_thumbnail(path, thumbnails_dir, sha256_hex):
             path.seek(0)
 
         if is_psd:
+            if _PSDImage is None:
+                import sys
+                print(f"\nThumbnail failed (PSD needs psd-tools): {path}"
+                      f"\n  Run: pip install psd-tools", file=sys.stderr)
+                return False
             try:
-                from psd_tools import PSDImage
                 if hasattr(path, 'seek'):
                     path.seek(0)
-                with PSDImage.open(path) as psd:
-                    img = psd.composite()
+                psd = _PSDImage.open(path)
+                img = psd.composite()
                 if img is None:
                     raise ValueError("PSD composite returned None (no visible layers?)")
                 img.thumbnail((256, 256), Image.Resampling.BILINEAR)
@@ -174,11 +200,6 @@ def create_thumbnail(path, thumbnails_dir, sha256_hex):
                     img = img.convert('RGB')
                 img.save(thumbnail_path, "WEBP", quality=80, method=1)
                 return True
-            except ImportError:
-                import sys
-                print(f"\nThumbnail failed (PSD needs psd-tools): {path}"
-                      f"\n  Run: pip install psd-tools", file=sys.stderr)
-                return False
             except Exception as e:
                 import sys
                 print(f"\nThumbnail failed (PSD): {path}\n  Reason: {e}", file=sys.stderr)
@@ -315,7 +336,7 @@ def process_unique_image(input_row, full_path_index, sha256_index, phash_index, 
     return output_row
 
 
-def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions, max_workers, exclusion_patterns=None, fast=False):
+def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions, max_workers, exclusion_patterns=None, inclusion_patterns=None, fast=False):
     """Scans a directory, reads only image headers (fast), saves metadata to a CSV catalog.
     In fast mode, skips all file opens — records only path, size, and extension."""
     processed_paths = set()
@@ -345,6 +366,8 @@ def scan_mode(identifier, root_dir, catalog_file, min_size_kb, extensions, max_w
         for filename in filenames:
             full_path = os.path.join(dirpath, filename)
             if exclusion_patterns and is_excluded(full_path, exclusion_patterns):
+                continue
+            if inclusion_patterns and not is_excluded(full_path, inclusion_patterns):
                 continue
             # Pre-filter by extension and size here, not in the worker.
             # Files that fail these checks would otherwise never land in the catalog
@@ -621,7 +644,7 @@ def _format_duration(minutes):
     return f"~{hours / 24:.1f} days"
 
 
-def estimate_mode(root_dir, min_size_kb, extensions, exclusion_patterns=None):
+def estimate_mode(root_dir, min_size_kb, extensions, exclusion_patterns=None, inclusion_patterns=None):
     """
     Zero-read pre-flight analysis using only filesystem metadata (no file content reads).
     Walks the directory, counts candidate image files, estimates duplicates by file size,
@@ -650,6 +673,8 @@ def estimate_mode(root_dir, min_size_kb, extensions, exclusion_patterns=None):
                 continue
             path = os.path.join(dirpath, filename)
             if exclusion_patterns and is_excluded(path, exclusion_patterns):
+                continue
+            if inclusion_patterns and not is_excluded(path, inclusion_patterns):
                 continue
             try:
                 size = os.path.getsize(path)
@@ -759,6 +784,8 @@ def main():
                      help='Comma-separated extensions to count.')
     est.add_argument('--exclusions', type=str, default='exclusions.txt',
                      help='Path to exclusions file (default: exclusions.txt).')
+    est.add_argument('--inclusions', type=str, default=None,
+                     help='Path to inclusions file. If set, only matching files are counted.')
 
     # scan
     scan_p = subparsers.add_parser('scan',
@@ -773,6 +800,8 @@ def main():
                         help='Optimise for spinning drives: forces a single worker to avoid seek contention.')
     scan_p.add_argument('--exclusions', type=str, default='exclusions.txt',
                         help='Path to exclusions file (default: exclusions.txt).')
+    scan_p.add_argument('--inclusions', type=str, default=None,
+                        help='Path to inclusions file. If set, only matching files are scanned.')
     scan_p.add_argument('--fast', action='store_true',
                         help='Skip file opens entirely: record only path, size, and extension. No dimensions or EXIF.')
 
@@ -791,10 +820,12 @@ def main():
     output_dir     = args.output_dir
     extensions_set = set(args.extensions.lower().split(',')) if hasattr(args, 'extensions') else set()
     exclusions     = load_exclusions(args.exclusions) if hasattr(args, 'exclusions') else []
+    inclusions     = load_inclusions(args.inclusions) if hasattr(args, 'inclusions') and args.inclusions else []
 
     if args.mode == 'estimate':
         create_exclusions_template(args.exclusions)
-        estimate_mode(args.directory, args.min_size, extensions_set, exclusion_patterns=exclusions)
+        estimate_mode(args.directory, args.min_size, extensions_set,
+                      exclusion_patterns=exclusions, inclusion_patterns=inclusions)
 
     elif args.mode == 'scan':
         max_workers  = 1 if args.hdd else args.max_workers
@@ -806,8 +837,10 @@ def main():
             print("HDD mode: single worker, sequential disk access.")
         if args.fast:
             print("Fast mode: skipping file opens, no dimensions or EXIF.")
+        if inclusions:
+            print(f"Inclusion mode: only processing files matching {len(inclusions)} pattern(s).")
         scan_mode(args.identifier, args.directory, catalog_file, args.min_size, extensions_set,
-                  max_workers, exclusion_patterns=exclusions, fast=args.fast)
+                  max_workers, exclusion_patterns=exclusions, inclusion_patterns=inclusions, fast=args.fast)
         print(f"\nScan complete. Catalog: {catalog_file}")
 
     elif args.mode == 'thumbnail':

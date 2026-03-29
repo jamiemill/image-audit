@@ -294,6 +294,10 @@
     </aside>
 
     <script>
+      function escHtml(s) {
+        return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      }
+
       const CONFIG_PATH = "config.json";
       const THUMBNAILS_DIR = "output/thumbnails";
       const SIMILARITY_THRESHOLD = 10;
@@ -548,11 +552,11 @@
             const similarCount = similarityMap.get(row.FullPath)?.length || 0;
             const dupeDisplay =
               dupeCount > 0
-                ? `<a href="#" class="clickable-link duplicate-link" data-path="${row.FullPath}">${dupeCount}</a>`
+                ? `<a href="#" class="clickable-link duplicate-link" data-path="${escHtml(row.FullPath)}">${dupeCount}</a>`
                 : "0";
             const similarDisplay =
               similarCount > 0
-                ? `<a href="#" class="clickable-link similar-link" data-path="${row.FullPath}">${similarCount}</a>`
+                ? `<a href="#" class="clickable-link similar-link" data-path="${escHtml(row.FullPath)}">${similarCount}</a>`
                 : "0";
             const thumbnailCell =
               row.SHA256 && row.SHA256 !== "N/A"
@@ -584,7 +588,7 @@
                       const truncated = directoryPathParts.slice(-3).join("/");
                       const fullDirectoryPath = directoryPathParts.join("/");
                       cellValue =
-                        `<span class="path-container" data-full-path="${fullDirectoryPath}">` +
+                        `<span class="path-container" data-full-path="${escHtml(fullDirectoryPath)}">` +
                         `<span class="path-expander" style="cursor: pointer; color: #007bff;">▾...</span>/${truncated}` +
                         `</span>`;
                     }
@@ -595,7 +599,7 @@
                 return `<td${className}>${cellValue}</td>`;
               })
               .join("");
-            return `<tr data-row-path="${row.FullPath}">${thumbnailCell}${dataCells}<td class="numeric-cell">${dupeDisplay}</td><td class="numeric-cell">${similarDisplay}</td></tr>`;
+            return `<tr data-row-path="${escHtml(row.FullPath)}">${thumbnailCell}${dataCells}<td class="numeric-cell">${dupeDisplay}</td><td class="numeric-cell">${similarDisplay}</td></tr>`;
           })
           .join("");
         tableBody.innerHTML = rowsHtml;
@@ -623,7 +627,7 @@
           const lastCell = tr.lastElementChild;
           lastCell.innerHTML =
             simCount > 0
-              ? `<a href="#" class="clickable-link similar-link" data-path="${path}">${simCount}</a>`
+              ? `<a href="#" class="clickable-link similar-link" data-path="${escHtml(path)}">${simCount}</a>`
               : "0";
         });
       }
@@ -671,7 +675,7 @@
       }
 
       function renderSidebarTable(container, sourceImage, items, type) {
-        const list = items.filter(
+        const list = (items || []).filter(
           (img) => img.FullPath !== sourceImage.FullPath
         );
         if (!list || list.length === 0) {
@@ -743,7 +747,7 @@
                       const truncated = directoryPathParts.slice(-3).join("/");
                       const fullDirectoryPath = directoryPathParts.join("/");
                       cellValue =
-                        `<span class="path-container" data-full-path="${fullDirectoryPath}">` +
+                        `<span class="path-container" data-full-path="${escHtml(fullDirectoryPath)}">` +
                         `<span class="path-expander" style="cursor: pointer; color: #007bff;">▾...</span>/${truncated}` +
                         `</span>`;
                     }
@@ -811,6 +815,7 @@
           const sourceImage = fullDataset.find(
             (item) => item.FullPath === path
           );
+          if (!sourceImage) return;
           let items, type;
 
           if (link.classList.contains("similar-link")) {

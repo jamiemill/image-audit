@@ -39,11 +39,13 @@ Example output:
       thumbnail phase 1:   ~28 min – ~57 min
       thumbnail phase 2:   ~3.2 hrs – ~5.5 hrs  (95,000 unique files)
 
-Re-run `estimate` after editing `exclusions.txt` to get a revised count and time estimate for only the files that will actually be processed.
+Re-run `estimate` after editing `exclusions.txt` or `inclusions.txt` to get a revised count and time estimate for only the files that will actually be processed.
 
 ---
 
-## Step 2: Excluding directories
+## Step 2: Filtering directories
+
+### Exclusions (blacklist)
 
 On first run, `estimate` or `scan` creates `exclusions.txt` in the current directory. Edit it to skip directories you don't want to scan (e.g. application libraries, system folders, old backups).
 
@@ -59,6 +61,24 @@ Excluded directories are pruned during the directory walk, so their contents are
 
 Use `--exclusions /path/to/file` to point to a different exclusions file.
 
+### Inclusions (whitelist)
+
+To scan only specific folders, create an `inclusions.txt` file with the folder names or paths you want, and pass it with `--inclusions`:
+
+    python3 scanner.py scan <identifier> --directory /path/to/drive --inclusions inclusions.txt
+
+Only files whose path matches a pattern in `inclusions.txt` will be processed. The format is identical to `exclusions.txt`. Both flags can be used together — include these folders, but exclude this subfolder within them.
+
+### Filtering an existing catalog
+
+If you've already scanned and want to apply new exclusions or inclusions without re-scanning:
+
+    python3 filter_catalog.py output/<identifier>.csv --exclusions exclusions.txt
+    python3 filter_catalog.py output/<identifier>.csv --inclusions inclusions.txt
+    python3 filter_catalog.py output/<identifier>.csv --exclusions exclusions.txt --inclusions inclusions.txt
+
+By default this overwrites the catalog in-place (safely via a `.tmp` file). Use `--output filtered.csv` to write to a new file instead.
+
 ---
 
 ## Step 3: Scan
@@ -71,7 +91,13 @@ Scans the directory, reads only image headers (dimensions + EXIF), and writes a 
 
     python3 scanner.py scan <identifier> --directory /path/to/your/drive --hdd
 
+**Fast mode** skips all file opens entirely and records only path, size, and extension — no dimensions or EXIF. Much faster when you just need a file inventory:
+
+    python3 scanner.py scan <identifier> --directory /path/to/your/drive --fast --hdd
+
 This creates `output/<identifier>.csv`.
+
+**Note on PSD files:** PIL can only read PSDs that were saved with Photoshop's "Maximize Compatibility" option enabled. PSDs saved without it will have their dimensions read directly from the file header instead. Thumbnailing PSDs requires `psd-tools` (`pip install psd-tools`).
 
 ---
 
@@ -85,6 +111,8 @@ Reads the scan catalog, deduplicates files, creates thumbnails, computes percept
 **How it works — three phases:**
 
 **Phase 1 — Quick dedup check.** Reads only the first 64KB of every file and hashes that together with the file size. This is enough to reliably identify duplicates (the first 64KB of a photo contains the full EXIF header — capture time, GPS, camera model — and the start of compressed image data; two different photos will essentially never match). Crucially, this costs the same for all file sizes: a 500MB TIFF and a 5MB JPEG both require one seek plus a tiny read. Files with matching quick-hashes are flagged as duplicates and excluded from phase 2.
+
+Phase 1 results are saved to a checkpoint file (`output/<identifier>_final.csv.phase1.json`) immediately after completion. If phase 2 is interrupted and you re-run, phase 1 is skipped and results are loaded from the checkpoint instead. The checkpoint is deleted automatically once phase 3 completes.
 
 **Phase 2 — Process unique files only.** For each file that passed the dedup check: streams the full file to compute SHA256, decodes the image with PIL to create a 256×256 thumbnail, and computes a perceptual hash from the thumbnail. Duplicate files never reach this phase — their SHA256 and perceptual hash are simply copied from whichever copy was processed. This means the expensive work (full file reads, PIL decode) only happens once per unique image, regardless of how many copies exist on the drive.
 
@@ -121,9 +149,11 @@ This creates:
 | Flag | Commands | Description |
 |------|----------|-------------|
 | `--hdd` | scan, thumbnail | Optimise for spinning drives: forces single worker to avoid seek contention |
+| `--fast` | scan | Skip file opens: record only path, size, and extension. No dimensions or EXIF |
 | `--max-workers N` | scan, thumbnail | Override worker count (default: CPU count; ignored if `--hdd` is set) |
 | `--yes` | thumbnail | Skip the disk-space confirmation prompt |
 | `--exclusions FILE` | estimate, scan | Path to exclusions file (default: `exclusions.txt`) |
+| `--inclusions FILE` | estimate, scan | Path to inclusions file — only matching files are processed |
 | `--min-size KB` | estimate, scan | Minimum file size to include (default: 100 KB) |
 | `--extensions` | estimate, scan | Comma-separated extensions (default: `jpg,jpeg,png,tiff,tif,psd`) |
 | `--output-dir` | all | Change the output directory (default: `output/`) |
@@ -132,4 +162,5 @@ This creates:
 
 ## Build for Distribution
 
-    pyinstaller --onefile scanner.py
+    pip install psd-tools
+    pyinstaller --onefile --collect-all psd_tools scanner.py
